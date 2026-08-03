@@ -901,6 +901,15 @@ class Orchestrator:
             3, "sku_input", lambda sel: js_search_sku(self.state.sku, sel),
             expected="searched", retries=3, wait_after=3.0)
         self._log(f"  SKU {self.state.sku} 已搜索")
+        # 等待搜索结果加载（ML 页面可能需 5-20 秒渲染结果表格）
+        self.ziniao.wait_for(
+            lambda _: ("(function(){var tds=document.querySelectorAll('td');"
+                       "for(var i=0;i<tds.length;i++){"
+                       "var t=tds[i].textContent.trim();"
+                       "if(/^[A-Z]{4}[0-9]+$/.test(t)||/^ML[UB][0-9]+$/.test(t))return 'found';}"
+                       "return 'waiting';})();"),
+            "", "found", timeout_s=30, interval_s=2.0, step=3,
+            action="search_results")
         # 提取 ML 码（非关键，失败 UNKNOWN 兜底）
         try:
             self.state.ml_code = self.ziniao.exec_js(JS_EXTRACT_ML_CODE, step=3, retries=1)
