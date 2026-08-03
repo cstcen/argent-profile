@@ -392,7 +392,11 @@ class PlaywrightClient:
                 raise StepError(step, "timeout", f"页面导航失败: {url}: {exc2}") from exc2
         # 等待页面主体容器渲染完成（避免后续点击误触导航栏）
         try:
-            await self.page.wait_for_selector("main, #root-app", timeout=15000)
+            main = self.page.locator("main, #root-app")
+            await main.first.wait_for(timeout=15000)
+            # 轻点页面主体确保焦点在内容区（关闭可能误开的导航菜单）
+            await main.first.click(position={"x": 10, "y": 10})
+            await asyncio.sleep(0.3)
         except Exception:
             pass
         if wait_after:
