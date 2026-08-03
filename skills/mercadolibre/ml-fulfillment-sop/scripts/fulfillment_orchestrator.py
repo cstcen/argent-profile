@@ -920,6 +920,9 @@ class Orchestrator:
         self.ziniao.exec_with_fallback(
             3, "qty_input", lambda sel: js_fill_qty(self.state.qty, sel),
             expected="filled", retries=3, wait_after=1.0)
+        # 等待按钮变为 enabled（填数量后约 3 秒）
+        self._log("  等待 Continuar 按钮启用...")
+        time.sleep(3.0)
         # 3c. Continuar
         self.ziniao.exec_with_fallback(
             3, "continuar_btn", lambda sel: js_click_button("Continuar", sel),
