@@ -410,7 +410,7 @@ class ZiniaoClient:
         return self.exec_js(phase2, step=step)
 
     def visit_plan_page(self, path: str, shipment_id: str, step: int) -> None:
-        """访问货件子页面：优先从当前 URL 提取 inbound ID，其次用货件号拼 plans 路径。"""
+        """访问货件子页面：优先从当前 URL 提取 inbound ID，其次用货件号拼 inbounds 路径。"""
         inbound = self.exec_js(
             "(function(){var m=location.href.match(/\\/inbounds\\/(\\d+)/);"
             "return m?m[1]:'';})();", step=step, retries=1)
@@ -419,7 +419,7 @@ class ZiniaoClient:
                        step=step, wait_after=2.0)
             return
         if shipment_id:
-            self.visit(f"{ML_BASE_URL}/shipping/plans/{shipment_id}/{path}",
+            self.visit(f"{ML_BASE_URL}/shipping/inbounds/{shipment_id}/{path}",
                        step=step, wait_after=2.0)
             return
         self.visit(f"{ML_BASE_URL}/shipping/{path}", step=step, wait_after=2.0)
@@ -485,6 +485,7 @@ class FeishuClient:
                     "name": str(f.get("品名", "") or ""),
                     "qty": str(f.get("数量", "") or ""),
                     "box": str(f.get("箱数", "") or ""),
+                    "shipment_id": str(f.get("货件号") or ""),
                 })
         return records
 
@@ -1258,6 +1259,11 @@ class Orchestrator:
             self.state.name = rec["name"]
             self.state.qty = rec["qty"]
             self.state.box = rec["box"]
+            # 若记录已有货件号（上次部分完成），跳过步骤 3 继续执行
+            existing_shipment = rec.get("shipment_id", "")
+            if existing_shipment and existing_shipment not in ("", "None", "null"):
+                self.state.shipment_id = existing_shipment
+                self._log(f"  已有货件号 {existing_shipment}，从步骤4继续")
         if shipment_id:
             self.state.shipment_id = shipment_id
         self._log(f"🚀 处理: {self.state.sku} {self.state.name} "
@@ -1282,7 +1288,11 @@ class Orchestrator:
                 elif step == 2:
                     self.step2_entry()
                 elif step == 3:
-                    self.step3_select_product()
+                    if self.state.shipment_id:
+                        self._log(f"  跳过步骤3（已有货件号 {self.state.shipment_id}）")
+                        self._mark_done(3)
+                    else:
+                        self.step3_select_product()
                 elif step == 4:
                     self.step4_appointment()
                 elif step == 5:
