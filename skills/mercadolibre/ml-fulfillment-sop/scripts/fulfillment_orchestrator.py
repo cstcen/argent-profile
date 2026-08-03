@@ -1127,6 +1127,8 @@ class Orchestrator:
             f"产品标-{self.state.sku}-{self.state.ml_code}-{self._safe_name(self.state.name)}.pdf",
             "产品标签")
         self._mark_done(6)
+        if self.state.record_id:
+            self.feishu.send_message("✅ 步骤6完成: 产品标签已上传")
 
     # ==================================================
     # 步骤 7：打印箱唛（写操作）
