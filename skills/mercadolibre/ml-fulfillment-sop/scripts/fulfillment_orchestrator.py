@@ -1167,23 +1167,23 @@ class Orchestrator:
 
         与 poll-fulfillment.sh 验证过的算法一致；若当前视图不足则翻月重试一次。
         """
-        day_chain = self.sel.chain(4, "day")
-        day_sel = day_chain[0]
+        day_sel = "div.day"
         for flip in range(2):
-            days = self.browser.page.locator(day_sel)
-            try:
-                n = await days.count()
-            except Exception as exc:
-                raise StepError(4, "selector_not_found", f"日历未渲染 ({exc})",
-                                recovery_attempted=[f"gray_circle_flip_{flip}"]) from exc
-            if n == 0:
-                raise StepError(4, "selector_not_found", "日历未渲染 (div.day 不存在)",
-                                recovery_attempted=[f"gray_circle_flip_{flip}"])
-            idx = await days.evaluate_all(
-                "(els) => els.findIndex(el => el.classList.contains('day--current'))")
+            # 直接用 page.evaluate 找 div.day--current 在所有 div.day 中的索引
+            idx = await self.browser.page.evaluate(
+                """() => {
+                    const days = document.querySelectorAll('div.day');
+                    for (let i = 0; i < days.length; i++) {
+                        if (days[i].classList.contains('day--current')) return i;
+                    }
+                    return -1;
+                }"""
+            )
             if idx < 0:
                 raise StepError(4, "selector_not_found", "未找到 div.day--current",
                                 recovery_attempted=[f"gray_circle_flip_{flip}"])
+            days = self.browser.page.locator("div.day")
+            n = await days.count()
             target = idx + 30
             if target >= n:
                 if flip == 0:
