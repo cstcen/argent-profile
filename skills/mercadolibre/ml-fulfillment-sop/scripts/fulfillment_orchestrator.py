@@ -431,7 +431,7 @@ class PlaywrightClient:
         return "clicked"
 
     # --- 选择器作用域：避免误点顶部导航栏 ---
-    _GENERIC_SELECTORS = ("button", "a", "input[type=checkbox]")  # 限定到main避免误触导航栏
+    _GENERIC_SELECTORS = ("input[type=checkbox]",)  # nav-header-user-switch 在导航栏，限定到main
 
     def _scope(self, selector: str) -> str:
         """将通用选择器限定到页面主体区域（main），排除顶部导航栏。"""
