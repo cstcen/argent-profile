@@ -1356,6 +1356,9 @@ class Orchestrator:
         # 直接导航到 appointment-v2 页面（跳过从列表找 Editar——列表有虚拟滚动，Editar 可能没渲染）
         await self.browser.visit_plan_page("appointment-v2", self.state.shipment_id, step=8)
         await asyncio.sleep(3)
+        # 滚动到底部（Cancelar reserva 在页面下方）
+        await self.browser.page.evaluate("window.scrollTo(0, 1500)")
+        await asyncio.sleep(0.5)
         # 点击 Cancelar reserva
         await self.browser.click_with_fallback(8, "cancelar_reserva", "Cancelar reserva")
         await asyncio.sleep(1)
