@@ -1337,7 +1337,8 @@ class Orchestrator:
         if not r.startswith("checked"):
             raise StepError(7, "selector_not_found", f"未找到 fragile checkbox ({r})",
                             recovery_attempted=["fiber_onChange"])
-        # 7g. Continuar
+        # 7g. 等加载旋转层消失再点 Continuar（箱唛生成后约5秒loading）
+        await asyncio.sleep(5)
         await self.browser.click_with_fallback(7, "continuar_btn", "Continuar", wait_after=3.0)
         # 上传箱唛（自动重命名 + 飞书 Base 附件）
         self._upload_latest_pdf(
