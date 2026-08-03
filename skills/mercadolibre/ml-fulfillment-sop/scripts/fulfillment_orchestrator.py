@@ -410,19 +410,25 @@ class ZiniaoClient:
         return self.exec_js(phase2, step=step)
 
     def visit_plan_page(self, path: str, shipment_id: str, step: int) -> None:
-        """访问货件子页面：优先从当前 URL 提取 inbound ID，其次用货件号拼 inbounds 路径。"""
-        inbound = self.exec_js(
-            "(function(){var m=location.href.match(/\\/inbounds\\/(\\d+)/);"
-            "return m?m[1]:'';})();", step=step, retries=1)
-        if inbound and inbound != "null":
-            self.visit(f"{ML_BASE_URL}/shipping/inbounds/{inbound}/{path}",
-                       step=step, wait_after=2.0)
-            return
-        if shipment_id:
-            self.visit(f"{ML_BASE_URL}/shipping/inbounds/{shipment_id}/{path}",
-                       step=step, wait_after=2.0)
-            return
-        self.visit(f"{ML_BASE_URL}/shipping/{path}", step=step, wait_after=2.0)
+        """访问货件子页面：使用 location.href JS 导航（page visit 在 ML 内部跳转会触发 chrome-error）。"""
+        # 先用当前 URL 提取 inbound ID，拼完整 URL 后用 location.href 跳转
+        path_escaped = path.replace("'", "\\'")
+        url_js = (
+            "(function(){"
+            "var m=location.href.match(/\\/inbounds\\/(\\d+)/);"
+            "if(m){return 'https://myaccount.mercadolibre.com.mx/shipping/inbounds/'+m[1]+'/" + path_escaped + "';}"
+            "return '';})();"
+        )
+        url = self.exec_js(url_js, step=step, retries=1)
+        if not url or url == "null":
+            if shipment_id:
+                url = f"{ML_BASE_URL}/shipping/inbounds/{shipment_id}/{path}"
+            else:
+                url = f"{ML_BASE_URL}/shipping/{path}"
+        # JS 导航
+        self.exec_js(
+            "(function(){location.href='" + url + "';return 'navigating';})();",
+            step=step, wait_after=3.0)
 
 
 # ────────────────────────────────────────────────
