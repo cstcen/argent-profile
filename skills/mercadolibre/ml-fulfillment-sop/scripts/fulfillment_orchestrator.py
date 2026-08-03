@@ -976,7 +976,7 @@ class Orchestrator:
             phase1=lambda: self.ziniao.exec_with_fallback(
                 4, "shipment_dropdown", lambda sel: js_pointer_click(sel),
                 expected="clicked", retries=3),
-            phase2=vehicle_js, wait=1.0, step=4)
+            phase2=vehicle_js, wait=2.0, step=4)
         if r != "selected":
             raise StepError(4, "selector_not_found", "未找到 Vehículo 运输选项",
                             recovery_attempted=[f"alt_selector:vehicle_option@{opt_chain}"])
