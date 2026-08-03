@@ -1300,9 +1300,10 @@ class Orchestrator:
         # 6-4. Confirmar 完成标签步骤
         await self.browser.click_with_fallback(6, "confirm_btn", "Confirmar", wait_after=3.0)
         # 上传产品标签（自动重命名 + 飞书 Base 附件）
+        store_tag = self._safe_name(self.cfg.store_name)
         self._upload_latest_pdf(
             "Etiquetas-de-producto-*.pdf",
-            f"产品标-{self.state.sku}-{self.state.ml_code}-{self._safe_name(self.state.name)}.pdf",
+            f"产品标+{self.state.sku}+{self.state.ml_code}+{self._safe_name(self.state.name)}+{store_tag}.pdf",
             "产品标签")
         self._mark_done(6)
         if self.state.record_id:
@@ -1346,9 +1347,10 @@ class Orchestrator:
         await asyncio.sleep(5)
         await self.browser.click_with_fallback(7, "continuar_btn", "Continuar", wait_after=3.0)
         # 上传箱唛（自动重命名 + 飞书 Base 附件）
+        store_tag = self._safe_name(self.cfg.store_name)
         self._upload_latest_pdf(
             "Envio-*-Etiquetas-de-bultos.pdf",
-            f"{self.state.shipment_id}-{self.state.box}箱.pdf",
+            f"{self.state.shipment_id}+{self.state.box}箱+{store_tag}.pdf",
             "箱唛")
         self._mark_done(7)
         if self.state.record_id:
