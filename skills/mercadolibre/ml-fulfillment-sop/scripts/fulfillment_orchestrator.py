@@ -394,8 +394,12 @@ class PlaywrightClient:
         try:
             main = self.page.locator("main, #root-app")
             await main.first.wait_for(timeout=15000)
-            # 轻点页面主体确保焦点在内容区（关闭可能误开的导航菜单）
-            await main.first.click(position={"x": 10, "y": 10})
+            # 滚动并点击页面中部确保焦点在内容区（关闭可能误开的导航菜单）
+            await main.first.evaluate("el => el.scrollIntoView({block: 'center'})")
+            await asyncio.sleep(0.2)
+            box = await main.first.bounding_box()
+            if box:
+                await main.first.click(position={"x": box["width"] / 2, "y": box["height"] / 2})
             await asyncio.sleep(0.3)
         except Exception:
             pass
