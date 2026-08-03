@@ -941,8 +941,13 @@ JS_EXTRACT_ML_CODE = """(function(){
   var tds = document.querySelectorAll('td');
   for (var i = 0; i < tds.length; i++) {
     var t = tds[i].textContent.trim();
-    if (/^[A-Z]{4}[0-9]+$/.test(t) || /^ML[UB][0-9]+$/.test(t)) return t;
+    var m = t.match(/[A-Z]{4}[0-9]+/) || t.match(/ML[UB][0-9]+/);
+    if (m) return m[0];
   }
+  // 兜底：搜 Código ML: XXXX12345 格式
+  var body = document.body.textContent;
+  var m2 = body.match(/Código ML:\s*([A-Z0-9]+)/);
+  if (m2) return m2[1];
   return 'UNKNOWN';
 })();"""
 
