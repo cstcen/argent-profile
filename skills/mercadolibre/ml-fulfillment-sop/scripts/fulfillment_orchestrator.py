@@ -964,22 +964,33 @@ class Orchestrator:
                          "')?'ready':'waiting';})();"),
             dd_chain[0], "ready", timeout_s=20, interval_s=2.0, step=4,
             action="appointment_page")
-        # 4b. 运输方式下拉（两阶段渲染：PointerEvent 开下拉 → React 渲染 → 再选 Vehículo）
-        opt_chain = self.sel.chain(4, "vehicle_option")
+        # 4b. 运输方式下拉（分两步：PointerEvent开下拉 → 选Vehículo，仿照旧bash验证过的两阶段调用）
+        # 阶段1：PointerEvent 全序列打开 Andes combobox（用精确ID，匹配旧bash选择器）
+        dropdown_js = (
+            "(function(){"
+            "var c=document.getElementById('shipment-type-selection-dropdown-id-trigger');"
+            "if(!c){var cb=document.querySelector('[role=combobox]');if(cb)c=cb;}"
+            "if(!c)return 'notfound';"
+            "var r=c.getBoundingClientRect(),x=r.left+r.width/2,y=r.top+r.height/2;"
+            "c.dispatchEvent(new PointerEvent('pointerover',{bubbles:true,clientX:x,clientY:y,pointerId:1,pointerType:'mouse'}));"
+            "c.dispatchEvent(new PointerEvent('pointerenter',{bubbles:true,clientX:x,clientY:y,pointerId:1,pointerType:'mouse'}));"
+            "c.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,clientX:x,clientY:y,pointerId:1,pointerType:'mouse',button:0,buttons:1}));"
+            "c.dispatchEvent(new PointerEvent('pointerup',{bubbles:true,clientX:x,clientY:y,pointerId:1,pointerType:'mouse',button:0,buttons:0}));"
+            "c.dispatchEvent(new MouseEvent('click',{bubbles:true,cancelable:true,clientX:x,clientY:y,button:0,view:window}));"
+            "return 'opened';})();"
+        )
+        self.ziniao.exec_js(dropdown_js, step=4, wait_after=2.0)
+        # 阶段2：选 Vehículo particular（下拉选项在第二次调用中可访问）
         vehicle_js = (
-            "(function(){var o=document.querySelectorAll('" + opt_chain[0] + "');"
+            "(function(){var o=document.querySelectorAll('[role=option]');"
             "for(var i=0;i<o.length;i++){"
             "if(o[i].textContent.indexOf('Vehículo')>=0){o[i].click();return 'selected';}}"
             "return 'notfound';})();"
         )
-        r = self.ziniao.two_phase_exec(
-            phase1=lambda: self.ziniao.exec_with_fallback(
-                4, "shipment_dropdown", lambda sel: js_pointer_click(sel),
-                expected="clicked", retries=3),
-            phase2=vehicle_js, wait=2.0, step=4)
+        r = self.ziniao.exec_js(vehicle_js, step=4)
         if r != "selected":
             raise StepError(4, "selector_not_found", "未找到 Vehículo 运输选项",
-                            recovery_attempted=[f"alt_selector:vehicle_option@{opt_chain}"])
+                            recovery_attempted=["alt_selector:vehicle_option"])
         self._log("  配送方式: Vehículo particular")
         # 4c. 日期选择：灰圈算法（div.day--current 之后第 30 格，跳过表头）
         date_chain = self.sel.chain(4, "date_input")
