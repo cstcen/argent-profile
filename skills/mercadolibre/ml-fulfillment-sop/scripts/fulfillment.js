@@ -570,4 +570,17 @@ function main() {
   process.exit(1);
 }
 
-main();
+// ---- 模块导出（供 fulfillment_orchestrator.py 通过 require 导入 SELECTORS/STEPS）----
+if (require.main === module) {
+  main();
+}
+
+module.exports = {
+  SELECTORS,
+  STEPS,
+  EXCEPTIONS,
+  FORBIDDEN,
+  findByText,
+  formatStepMarkdown,
+  buildPushCard,
+};
