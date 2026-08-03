@@ -1321,7 +1321,8 @@ class Orchestrator:
         # 7c. Generar etiquetas
         await self.browser.click_with_fallback(7, "generate_btn", "Generar etiquetas",
                                                wait_after=5.0)
-        # 7d. Descarga todas las etiquetas
+        # 7d. 等 Descarga todas 按钮出现（箱唛生成需要时间）
+        await self.browser.wait_for_text("Descarga todas", selector="button", timeout=30, action="download_all_btn")
         await self.browser.click_contains_with_fallback(7, "download_all", "Descarga todas",
                                                         wait_after=2.0)
         # 7e. 弹窗「Descarga e imprime las etiquetas」→ Normal → Descargar etiquetas
