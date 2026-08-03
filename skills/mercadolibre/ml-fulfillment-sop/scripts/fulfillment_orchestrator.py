@@ -947,15 +947,8 @@ class Orchestrator:
     # ==================================================
     def step4_appointment(self) -> None:
         self._log("步骤4 货件预约时间")
-        # 4a. 进入预约页（从当前 URL 提取 inbound ID）
-        r = self.ziniao.exec_js(
-            "(function(){var m=location.href.match(/\\/inbounds\\/(\\d+)/);"
-            "if(m){location.href='https://myaccount.mercadolibre.com.mx/shipping/inbounds/'"
-            "+m[1]+'/appointment-v2';return 'navigating';}return 'notfound';})();",
-            step=4, retries=1)
-        if r != "navigating":
-            raise StepError(4, "business", "无法从 URL 提取 inbound ID",
-                            recovery_attempted=["url_regex"])
+        # 4a. 进入预约页（优先从URL提取inbound ID，其次用货件号拼plans路径）
+        self.ziniao.visit_plan_page("appointment-v2", self.state.shipment_id, step=4)
         time.sleep(3)
         # 等待预约页加载（轮询运输方式下拉框）
         dd_chain = self.sel.chain(4, "shipment_dropdown")
