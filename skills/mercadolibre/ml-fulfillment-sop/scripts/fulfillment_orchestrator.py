@@ -390,6 +390,11 @@ class PlaywrightClient:
                 await self.page.goto(url, wait_until="domcontentloaded", timeout=timeout * 1000)
             except Exception as exc2:
                 raise StepError(step, "timeout", f"页面导航失败: {url}: {exc2}") from exc2
+        # 等待页面主体容器渲染完成（避免后续点击误触导航栏）
+        try:
+            await self.page.wait_for_selector("main, #root-app", timeout=15000)
+        except Exception:
+            pass
         if wait_after:
             await asyncio.sleep(wait_after)
 
@@ -426,7 +431,7 @@ class PlaywrightClient:
         return "clicked"
 
     # --- 选择器作用域：避免误点顶部导航栏 ---
-    _GENERIC_SELECTORS = ()  # 暂时禁用作用域限制，避免误过滤 modal/弹窗内的按钮
+    _GENERIC_SELECTORS = ("button", "a")  # 限定到main避免误触导航栏
 
     def _scope(self, selector: str) -> str:
         """将通用选择器限定到页面主体区域（main），排除顶部导航栏。"""
