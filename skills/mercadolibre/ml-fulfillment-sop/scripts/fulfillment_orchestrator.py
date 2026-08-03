@@ -392,15 +392,7 @@ class PlaywrightClient:
                 raise StepError(step, "timeout", f"页面导航失败: {url}: {exc2}") from exc2
         # 等待页面主体容器渲染完成（避免后续点击误触导航栏）
         try:
-            main = self.page.locator("main, #root-app")
-            await main.first.wait_for(timeout=15000)
-            # 滚动并点击页面中部确保焦点在内容区（关闭可能误开的导航菜单）
-            await main.first.evaluate("el => el.scrollIntoView({block: 'center'})")
-            await asyncio.sleep(0.2)
-            box = await main.first.bounding_box()
-            if box:
-                await main.first.click(position={"x": box["width"] / 2, "y": box["height"] / 2})
-            await asyncio.sleep(0.3)
+            await self.page.wait_for_selector("main, #root-app", timeout=15000)
         except Exception:
             pass
         if wait_after:
@@ -439,7 +431,7 @@ class PlaywrightClient:
         return "clicked"
 
     # --- 选择器作用域：避免误点顶部导航栏 ---
-    _GENERIC_SELECTORS = ("button", "a")  # 限定到main避免误触导航栏
+    _GENERIC_SELECTORS = ("button", "a", "input[type=checkbox]")  # 限定到main避免误触导航栏
 
     def _scope(self, selector: str) -> str:
         """将通用选择器限定到页面主体区域（main），排除顶部导航栏。"""
@@ -631,7 +623,7 @@ class PlaywrightClient:
         - nth_start/nth_end 支持只勾选区间（如箱唛 Pallets #2/#3）
         返回 'checked:N/M' | 'need3:N' | 'notfound'。
         """
-        loc = self.page.locator(selector)
+        loc = self.page.locator(self._scope(selector))
         try:
             count = await loc.count()
         except Exception:
