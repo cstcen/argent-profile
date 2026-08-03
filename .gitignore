@@ -1,0 +1,17 @@
+# user-owned paths — never commit these
+.env
+auth.json
+memories/
+sessions/
+state.db
+state.db-shm
+state.db-wal
+logs/
+workspace/
+plans/
+home/
+*_cache/
+local/
+__pycache__/
+*.pyc
+.DS_Store

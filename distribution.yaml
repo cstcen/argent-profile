@@ -1,0 +1,22 @@
+name: argent
+version: 0.4.0
+description: "Argent — 问述科技桌面 AI 助手，内置美客多运营、HR、行政等行业角色"
+author: "问述科技 (Whyshu)"
+hermes_requires: ">=0.13.0"
+license: MIT
+
+# CRITICAL: SOUL.md NOT in distribution_owned
+# → argent role switches are preserved across hermes profile update
+distribution_owned:
+  - skills/
+  - cron/
+  - mcp.json
+
+env_requires:
+  - name: WHYSHU_API_KEY
+    description: "问述科技 API Key — 运行 argent login 自动获取"
+    required: true
+  - name: OPENAI_BASE_URL
+    description: "API 代理地址"
+    required: false
+    default: "https://whyshu.com/api/argent/v1"
