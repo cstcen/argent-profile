@@ -562,7 +562,7 @@ JS_EXTRACT_SHIPMENTS = """(function(){
 
 def js_click_button(text: str, selector: str, require_enabled: bool = True) -> str:
     """按 textContent 精确匹配按钮并点击；返回 'clicked' | 'notfound'。"""
-    enabled = " && !b[i].disabled" if require_enabled else ""
+    enabled = " && !els[i].disabled" if require_enabled else ""
     return (
         "(function(){var sels=['" + selector + "'];"
         "for(var s=0;s<sels.length;s++){var els=document.querySelectorAll(sels[s]);"
