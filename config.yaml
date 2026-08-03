@@ -1,6 +1,6 @@
 model:
   default: deepseek-v4-pro
-  provider: openrouter
+  provider: custom:openrouter
 custom_providers:
   - name: openrouter
     base_url: https://whyshu.com/api/argent/v1
