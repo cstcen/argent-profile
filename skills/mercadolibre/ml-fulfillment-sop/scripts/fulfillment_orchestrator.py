@@ -1121,6 +1121,8 @@ class Orchestrator:
             raise StepError(4, "selector_not_found", "未找到 Vehículo 运输选项",
                             recovery_attempted=["alt_selector:vehicle_option"])
         self._log("  配送方式: Vehículo particular")
+        # 等待页面稳定（Vehículo 选择后 React 重渲染）
+        await self.browser.wait_for_selector('[id^="_r_"][readonly]', timeout=15, action="date_input_after_vehicle")
         # 4c. 日期选择：点击只读日期输入框打开日历，然后灰圈算法选第 30 格
         await self.browser.click_selector_with_fallback(4, "date_input")
         await asyncio.sleep(1)
