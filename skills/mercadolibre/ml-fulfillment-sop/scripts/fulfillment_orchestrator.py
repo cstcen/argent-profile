@@ -414,7 +414,7 @@ class PlaywrightClient:
     async def click_selector(self, selector: str, step: int = 0,
                              wait_after: float = 0.0) -> str:
         """点击第一个匹配元素（无文本条件）。返回 'clicked' | 'notfound'。"""
-        loc = self.page.locator(selector)
+        loc = self.page.locator(self._scope(selector))
         try:
             if await loc.count() == 0:
                 return "notfound"
@@ -425,6 +425,15 @@ class PlaywrightClient:
             await asyncio.sleep(wait_after)
         return "clicked"
 
+    # --- 选择器作用域：避免误点顶部导航栏 ---
+    _GENERIC_SELECTORS = ("button", "a", "input[type=checkbox]", "input[type=number]")
+
+    def _scope(self, selector: str) -> str:
+        """将通用选择器限定到页面主体区域（main），排除顶部导航栏。"""
+        if selector in self._GENERIC_SELECTORS:
+            return f"main {selector}, #root-app {selector}"
+        return selector
+
     async def click_button(self, text: str, selector: str = "button",
                            require_enabled: bool = True, step: int = 0,
                            wait_after: float = 0.0, timeout: int = 15) -> str:
@@ -433,7 +442,7 @@ class PlaywrightClient:
         require_enabled=False 时 force 点击（日历区 Confirmar 等 disabled 元素场景）。
         """
         pat = re.compile(rf"^\s*{re.escape(text)}\s*$")
-        loc = self.page.locator(selector).filter(has_text=pat)
+        loc = self.page.locator(self._scope(selector)).filter(has_text=pat)
         try:
             count = await loc.count()
         except Exception:
@@ -799,12 +808,14 @@ class FeishuClient:
     def __init__(self, cfg: Config) -> None:
         self.cfg = cfg
 
-    def _run(self, args: list[str], timeout: int = 60, retries: int = 2) -> str:
+    def _run(self, args: list[str], timeout: int = 60, retries: int = 2,
+             cwd: Optional[str] = None) -> str:
         last_err = ""
         for attempt in range(retries):
             try:
                 proc = subprocess.run(["lark-cli", *args],
-                                      capture_output=True, text=True, timeout=timeout)
+                                      capture_output=True, text=True, timeout=timeout,
+                                      cwd=cwd)
             except subprocess.TimeoutExpired as exc:
                 last_err = f"lark-cli 超时({timeout}s)"
                 if attempt < retries - 1:
@@ -874,12 +885,14 @@ class FeishuClient:
     def upload_attachment(self, record_id: str, field_name: str, file_path: str) -> None:
         if not self.cfg.feishu_ready:
             raise StepError(0, "business", "飞书未配置，无法上传附件")
+        # lark-cli 要求 --file 必须是相对路径，先 cd 到文件所在目录
+        p = Path(file_path)
         self._run(["base", "+record-upload-attachment",
                    "--base-token", self.cfg.base_token,
                    "--table-id", self.cfg.table_id,
                    "--record-id", record_id,
                    "--field-id", field_name,
-                   "--file", file_path], timeout=120)
+                   "--file", p.name], timeout=120, cwd=str(p.parent))
 
     def send_message(self, text: str) -> None:
         if not (self.cfg.feishu_ready and self.cfg.feishu_user):
