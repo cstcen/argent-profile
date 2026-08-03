@@ -1353,13 +1353,10 @@ class Orchestrator:
     # ==================================================
     async def step8_cancel_appointment(self) -> None:
         self._log("步骤8 取消预约")
-        await self.browser.navigate(INBOUNDS_URL, step=8, wait_after=3.0)
-        # 第 2 个 Editar 链接（Playwright 自动滚动到目标）
-        r = await self.browser.click_nth("a", "Editar", 1, step=8)
-        if r != "clicked":
-            raise StepError(8, "selector_not_found", "未找到第2个 Editar 链接",
-                            recovery_attempted=["nth_link"])
+        # 直接导航到 appointment-v2 页面（跳过从列表找 Editar——列表有虚拟滚动，Editar 可能没渲染）
+        await self.browser.visit_plan_page("appointment-v2", self.state.shipment_id, step=8)
         await asyncio.sleep(3)
+        # 点击 Cancelar reserva
         await self.browser.click_with_fallback(8, "cancelar_reserva", "Cancelar reserva")
         await asyncio.sleep(1)
         await self.browser.click_with_fallback(8, "cancelar_cita", "Cancelar cita")
