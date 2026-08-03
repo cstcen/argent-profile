@@ -426,7 +426,7 @@ class PlaywrightClient:
         return "clicked"
 
     # --- 选择器作用域：避免误点顶部导航栏 ---
-    _GENERIC_SELECTORS = ("button", "a", "input[type=checkbox]", "input[type=number]")
+    _GENERIC_SELECTORS = ()  # 暂时禁用作用域限制，避免误过滤 modal/弹窗内的按钮
 
     def _scope(self, selector: str) -> str:
         """将通用选择器限定到页面主体区域（main），排除顶部导航栏。"""
@@ -1278,7 +1278,8 @@ class Orchestrator:
             self.state.dry_run_notes.append("步骤6 只做勾选探测（dry_run 不触发下载）")
             self._mark_done(6)
             return
-        # 6-2. Descargar etiquetas（等 React 渲染后按钮启用）
+        # 6-2. 等按钮启用（React 受控组件：勾选后需渲染才能启用 Descargar etiquetas）
+        await self.browser.wait_for_text("Descargar etiquetas", selector="button", timeout=15, action="descargar_btn_enabled")
         await self.browser.click_with_fallback(6, "descargar_btn", "Descargar etiquetas",
                                                wait_after=2.0)
         # 6-3. 弹窗「¿Cómo quieres descargar tus etiquetas?」→ 点「Descargar」
