@@ -1116,9 +1116,28 @@ class Orchestrator:
     # 步骤 2：点击 Enviar productos 进入创建入口（只读导航）
     # ==================================================
     async def step2_entry(self) -> None:
-        self._log("步骤2 货件创建入口：直接进入 SKU 搜索页")
-        search_url = f"https://www.mercadolibre.com.mx/publicaciones/listado/shipment_planning/plans?search={self.state.sku}"
-        await self.browser.navigate(search_url, step=2, wait_after=3.0)
+        self._log("步骤2 货件创建入口：点击 Enviar productos")
+        await self.browser.navigate(INBOUNDS_URL, step=2, wait_after=2.0)
+        # 等待 inbounds 页面加载完成（main 容器出现）
+        await self.browser.wait_for_selector("main, #root-app", timeout=15, action="inbounds_load")
+        await self.browser.click_with_fallback(2, "enviar_btn", "Enviar productos")
+        self._log("  Enviar productos 点击成功")
+        # 处理 2店 广告弹窗：点「Continuar」关闭（无弹窗时页面上可能有同名按钮，点一次无害）
+        await asyncio.sleep(1.5)
+        try:
+            popup_btn = self.browser.page.locator("button").filter(has_text="Continuar")
+            for i in range(await popup_btn.count()):
+                btn = popup_btn.nth(i)
+                if await btn.is_visible() and not await btn.is_disabled():
+                    await btn.click()
+                    self._log("  已关闭弹窗")
+                    await asyncio.sleep(1)
+                    break
+        except Exception:
+            pass
+        # 等待导航到 Planificación 页面（搜索框出现）
+        sku_chain = self.sel.chain(3, "sku_input")
+        await self._wait_any_selector(2, "planificacion_page", sku_chain)
         self._mark_done(2)
 
     # ==================================================
@@ -1126,18 +1145,14 @@ class Orchestrator:
     # ==================================================
     async def step3_select_product(self) -> None:
         self._log("步骤3 选择产品与数量")
-        # 搜索已在步2完成（URL query），检测是否有搜索结果
+        # 3a. 搜索 SKU（fill + Enter，页面已在 planificación 页）
+        await self.browser.fill_with_fallback(3, "sku_input", self.state.sku,
+                                              press_enter=True, wait_after=3.0)
+        self._log(f"  SKU {self.state.sku} 已搜索")
+        # 检测搜索结果：有数量输入框 = 成功，否则发送通知并停止
+        await asyncio.sleep(1)
         has_results = await self.browser.page.evaluate(
-            """() => {
-                // 有数量输入框 = 搜索成功
-                if (document.querySelector('input[type="number"]')) return true;
-                // 明确显示「0 resultados」或「No se encontraron」
-                const body = document.body.textContent;
-                if (/0\\s*resultados/i.test(body) || /No se encontraron/i.test(body)) return false;
-                // 如果都没命中，再检查是否有产品行（td 元素）
-                const tds = document.querySelectorAll('td');
-                return tds.length > 0 && !/0\\s*u\\.\\s*\\(0\\s*productos\\)/i.test(body);
-            }"""
+            "() => document.querySelector('input[type=\"number\"]') !== null"
         )
         if not has_results:
             msg = f"SKU {self.state.sku} 在店铺 {self.state.store_name} 未找到"
