@@ -1308,7 +1308,8 @@ class Orchestrator:
         self._upload_latest_pdf(
             "Etiquetas-de-producto-*.pdf",
             f"产品标+{self.state.sku}+{self.state.ml_code}+{self._safe_name(self.state.name)}+{store_tag}.pdf",
-            "产品标签")
+            "产品标签",
+            exclude=r"Etiquetas-de-bultos|Envio-")
         self._mark_done(6)
         if self.state.record_id:
             self.feishu.send_message("✅ 步骤6完成: 产品标签已上传")
@@ -1385,7 +1386,8 @@ class Orchestrator:
     def _safe_name(name: str) -> str:
         return re.sub(r'[\\/:*?"<>|\r\n]+', "_", name).strip() or "产品"
 
-    def _upload_latest_pdf(self, pattern: str, rename_to: str, field_name: str) -> None:
+    def _upload_latest_pdf(self, pattern: str, rename_to: str, field_name: str,
+                           exclude: str = "") -> None:
         """从下载目录找最新匹配的 PDF，重命名后上传到飞书 Base 附件字段。
         
         紫鸟下载目录按店铺分文件夹：ziniaobrowserdatas/{店铺名}/
@@ -1404,6 +1406,16 @@ class Orchestrator:
             self._log(f"  ⚠️ 下载目录不存在: {dl_dir}")
             return
         candidates = sorted(dl_dir.glob(pattern), key=lambda p: p.stat().st_mtime, reverse=True)
+        if not candidates:
+            # 兜底：pattern 可能不对（ML 文件名未知），找最新非排除项的 PDF
+            all_pdfs = sorted(dl_dir.glob("*.pdf"), key=lambda p: p.stat().st_mtime, reverse=True)
+            for pdf in all_pdfs:
+                if exclude and re.search(exclude, pdf.name):
+                    continue  # 跳过箱唛/已重命名文件
+                if "产品标" in pdf.name or "箱" in pdf.name:
+                    continue  # 跳过已处理文件
+                candidates = [pdf]
+                break
         if not candidates:
             self._log(f"  ⚠️ 未找到 {pattern}，跳过上传")
             return
