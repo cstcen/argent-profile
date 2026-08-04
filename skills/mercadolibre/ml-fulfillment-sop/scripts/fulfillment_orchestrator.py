@@ -1126,14 +1126,17 @@ class Orchestrator:
     # ==================================================
     async def step3_select_product(self) -> None:
         self._log("步骤3 选择产品与数量")
-        # 搜索已在步2完成（URL query），检测搜索结果
+        # 搜索已在步2完成（URL query），检测是否有搜索结果
         has_results = await self.browser.page.evaluate(
             """() => {
+                // 有数量输入框 = 搜索成功
+                if (document.querySelector('input[type="number"]')) return true;
+                // 明确显示「0 resultados」或「No se encontraron」
                 const body = document.body.textContent;
-                // 有「0 productos」或「0 u. (0 productos)」表示无结果
-                if (/0\\s*(productos|u\\.)/i.test(body)) return false;
-                // 有数量输入框表示有结果
-                return document.querySelector('input[type=\"number\"]') !== null;
+                if (/0\\s*resultados/i.test(body) || /No se encontraron/i.test(body)) return false;
+                // 如果都没命中，再检查是否有产品行（td 元素）
+                const tds = document.querySelectorAll('td');
+                return tds.length > 0 && !/0\\s*u\\.\\s*\\(0\\s*productos\\)/i.test(body);
             }"""
         )
         if not has_results:
