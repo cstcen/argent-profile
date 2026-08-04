@@ -1266,6 +1266,8 @@ class Orchestrator:
         await self.browser.click_with_fallback(5, "confirm_btn", "Confirmar")
         await asyncio.sleep(3)
         self._mark_done(5)
+        if self.state.record_id:
+            self.feishu.send_message(f"✅ 步骤5完成: 包装确认 - {self.state.sku}")
 
     # ==================================================
     # 步骤 6：标签下载（只读下载）
