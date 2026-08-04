@@ -1,5 +1,5 @@
 model:
-  default: deepseek-v4-pro
+  default: deepseek-v4-flash
   provider: custom:openrouter
 custom_providers:
   - name: openrouter
