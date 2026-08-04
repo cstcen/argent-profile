@@ -1232,6 +1232,22 @@ class Orchestrator:
             raise StepError(4, "selector_not_found", "未找到 Vehículo 运输选项",
                             recovery_attempted=["alt_selector:vehicle_option"])
         self._log("  配送方式: Vehículo particular")
+        # 检测是否出现地址选择（大货件需要选仓库地址）
+        addr_btn = self.browser.page.locator('.andes-list__item-action')
+        if await addr_btn.count() > 0 and await addr_btn.first.is_visible():
+            self._log("  检测到大货件地址选择，选 MXCD05")
+            addrs = self.browser.page.locator('.andes-list__item-action')
+            for i in range(await addrs.count()):
+                btn = addrs.nth(i)
+                if await btn.is_visible():
+                    text = (await btn.text_content() or "")
+                    if "MXCD05" in text:
+                        await btn.click()
+                        self._log("  已选地址: MXCD05")
+                        await asyncio.sleep(1)
+                        await self.browser.click_with_fallback(4, "continuar_btn", "Continuar", wait_after=2.0)
+                        break
+        # 等日期输入框（大货件选地址后、普通货件选Vehículo后）
         # 等待页面稳定（Vehículo 选择后 React 重渲染）
         await self.browser.wait_for_selector('input[readonly]', timeout=15, action="date_input_after_vehicle")
         # 4c. 日期选择：点击只读日期输入框打开日历，然后灰圈算法选第 30 格
