@@ -1608,20 +1608,42 @@ class Orchestrator:
         return Path(dl_path), port
 
     def _build_port_map(self) -> dict[str, int]:
-        """启动时一次性建立端口→店铺映射（遍历所有CDP端口，通过ML页面用户标识识别）。"""
+        """启动时一次性建立端口→店铺映射。
+        
+        先读缓存 (~/.hermes/scripts/cdp-port-map.json)，失效则遍历CDP端口通过ML用户识别。
+        """
         ports = _discover_cdp_ports()
         if len(ports) <= 1:
-            return {}  # 单端口无需映射
+            return {}
+        # 读缓存
+        cache_file = Path.home() / ".hermes" / "scripts" / "cdp-port-map.json"
+        try:
+            cached = json.loads(cache_file.read_text())
+            if all(p in ports for p in cached.values()):
+                return cached
+        except Exception:
+            pass
+        # 重建：逐个端口连ML页面，通过用户标识匹配店铺
+        USER_PATTERNS = {
+            "1店-子账号": ["HWHuang"],
+            "2店-子账号": ["HXhuang"],
+            "3店-主账号": ["SSILEIXIA"],
+        }
         store_map = {}
-        # 用户标识→店铺名（基于已知映射）
-        USER_HINTS = {"HWHuang": "1店-子账号", "HXhuang": "2店-子账号", "SSILEIXIA": "3店-主账号"}
         for port in ports:
             try:
                 user = self._quick_identify_port(port)
-                for hint, store_name in USER_HINTS.items():
-                    if hint in (user or ""):
-                        store_map[store_name] = port
-                        break
+                if user:
+                    for store_name, hints in USER_PATTERNS.items():
+                        if any(h in user for h in hints):
+                            store_map[store_name] = port
+                            break
+            except Exception:
+                pass
+        if store_map:
+            try:
+                cache_file.parent.mkdir(parents=True, exist_ok=True)
+                cache_file.write_text(json.dumps(store_map))
             except Exception:
                 pass
         return store_map
