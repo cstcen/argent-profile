@@ -399,22 +399,12 @@ class PlaywrightClient:
             await asyncio.sleep(wait_after)
 
     async def visit_plan_page(self, path: str, shipment_id: str, step: int) -> None:
-        """访问货件子页面：优先用货件号拼 URL，失败则经 hub-v2 中转。"""
+        """访问货件子页面：用货件号拼 URL。"""
         if shipment_id:
-            # 直接尝试目标 URL
             url = f"{ML_BASE_URL}/shipping/inbounds/{shipment_id}/{path}"
-            await self.navigate(url, step=step)
-            # 验证是否成功到达（ML 可能重定向到无关页面如 /details）
-            current = await self.current_url()
-            if path in current:
-                return
-            print(f"[{time.strftime('%H:%M:%S')}]   直接导航被重定向到 {current}，改经 hub-v2 中转",
-                  file=sys.stderr, flush=True)
-            # 经 hub 中转
-            await self.navigate(f"{ML_BASE_URL}/shipping/inbounds/{shipment_id}/hub-v2", step=step)
-            await asyncio.sleep(2)
         else:
-            await self.navigate(f"{ML_BASE_URL}/shipping/{path}", step=step)
+            url = f"{ML_BASE_URL}/shipping/{path}"
+        await self.navigate(url, step=step)
 
     # ---- 点击 ----
 
@@ -955,10 +945,18 @@ JS_EXTRACT_ML_CODE = """(function(){
 })();"""
 
 JS_EXTRACT_SHIPMENT_ID = """(function(){
-  var m = location.href.match(/\\/plans\\/(\\d+)/);
-  if (m) return m[1];
-  var m2 = location.href.match(/\\/(\\d{8})\\//);
-  if (m2) return m2[1];
+  // 优先从页面 DOM 提取货件号（URL 中的 /inbounds/ 编号 ≠ 货件号）
+  var h1 = document.querySelector('h1, h2, [class*=title]');
+  if (h1) {
+    var m = h1.textContent.match(/#?(\d{8,})/);
+    if (m) return m[1];
+  }
+  // 兜底：URL /plans/XXXXX 或页面任意 8+ 位数字
+  var pm = location.href.match(/\/plans\/(\d+)/);
+  if (pm) return pm[1];
+  var body = document.body.textContent;
+  var bm = body.match(/envío\s*#?(\d{8,})/i) || body.match(/shipment\s*#?(\d{8,})/i);
+  if (bm) return bm[1];
   return 'UNKNOWN';
 })();"""
 
