@@ -215,8 +215,8 @@ STEP_FALLBACKS: dict[int, dict[str, tuple[Optional[str], list[str]]]] = {
         "sku_input": (None, ['input[placeholder*="Buscar por producto"]',
                              'input[placeholder*="SKU"]',
                              'input[placeholder*="搜索"]']),
-        "qty_input": (None, ['input[id^="_r_"][class*="andes-form-control"]',
-                             'input[type="number"]']),
+        "qty_input": (None, ['input[type="number"]',
+                             'input[id^="_r_"][class*="andes-form-control"]']),
         "continuar_btn": (None, ["button"]),          # textContent === "Continuar" && !disabled
         "plan_modal_btn": (None, ["button"]),         # textContent === "Continuar con mi plan actual"
     },
@@ -225,7 +225,8 @@ STEP_FALLBACKS: dict[int, dict[str, tuple[Optional[str], list[str]]]] = {
                               ["#shipment-type-selection-dropdown-id-trigger",
                                '[role="combobox"]']),
         "vehicle_option": (None, ['[role="option"]']),  # textContent 含 "Vehículo"
-        "date_input": ("dateInput", ['input[readonly][id^="_r_"]']),
+        "date_input": ("dateInput", ['input[readonly]',
+                                      'input[readonly][id^="_r_"]']),
         "next_month": ("nextMonthBtn", ['[aria-label="next month"]']),
         "day": ("availableDay", ["div.day"]),
         "hour": (None, ["div.hour"]),
