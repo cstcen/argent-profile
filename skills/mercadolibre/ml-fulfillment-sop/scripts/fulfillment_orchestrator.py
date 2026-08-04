@@ -1564,20 +1564,11 @@ class Orchestrator:
             return False
 
     def _open_store(self) -> Path:
-        """关闭当前店铺，再打开目标店铺（根据 Base 记录的店铺名称）。"""
+        """切换到目标店铺（不关店，紫鸟单进程只需切换 profile，reused=true 极快）。"""
         store_info = STORE_MAP.get(self.state.store_name)
         if not store_info:
             store_info = STORE_MAP["3店"]  # 兜底
-        # 关闭所有已开店铺（使用 storeId，不是 name）
-        for sid in ["27477945046190", "27494792824433", "27581021073442"]:
-            try:
-                subprocess.run(
-                    ["ziniao-cli", "store", "close", "--id", sid],
-                    capture_output=True, text=True, timeout=15,
-                )
-            except Exception:
-                pass
-        # 打开目标店铺
+        # 切换到目标店铺（不先关店——频繁关店可能触发美客多安全检测）
         try:
             result = subprocess.run(
                 ["ziniao-cli", "store", "open", "--name", store_info["name"], "--headless"],
@@ -1641,15 +1632,9 @@ class Orchestrator:
         # 根据店铺名称启动紫鸟店铺（仅一次），获取下载目录；随后 CDP 接管浏览器
         try:
             self._dl_dir = self._open_store()
-            # 等待 CDP 端口就绪（关店再开店时浏览器会重启，端口可能变化）
-            for attempt in range(30):
-                port = _discover_cdp_port()
-                if port:
-                    self.browser.cdp_url = f"http://127.0.0.1:{port}"
-                    break
-                time.sleep(1)
-            else:
-                self.browser.cdp_url = DEFAULT_CDP_URL
+            # 发现 CDP 端口（不关店时端口不会变）
+            port = _discover_cdp_port()
+            self.browser.cdp_url = f"http://127.0.0.1:{port}" if port else DEFAULT_CDP_URL
             self._log(f"  CDP 端口: {self.browser.cdp_url}")
             await self.browser.connect(download_dir=str(self._dl_dir))
         except StepError as exc:
