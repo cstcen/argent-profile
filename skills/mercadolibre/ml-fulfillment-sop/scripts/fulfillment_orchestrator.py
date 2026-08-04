@@ -352,36 +352,19 @@ class PlaywrightClient:
                 })
             except Exception:
                 pass
-        # 定位 ML 页面（跨所有 context）：优先 mercadolibre.com.mx，其次 mercadolibre.com
-        target, self._context = None, None
-        for ctx in self._browser.contexts:
-            for p in ctx.pages:
-                if "mercadolibre.com.mx" in (p.url or ""):
-                    target, self._context = p, ctx
-                    break
-            if target:
-                break
-        if target is None:
-            for ctx in self._browser.contexts:
-                for p in ctx.pages:
-                    if "mercadolibre.com" in (p.url or ""):
-                        target, self._context = p, ctx
-                        break
-                if target:
-                    break
-        if target is None:
-            if self._browser.contexts:
-                self._context = self._browser.contexts[0]
-            else:
-                self._context = await self._browser.new_context()
-            pages = self._context.pages
-            target = pages[0] if pages else await self._context.new_page()
-        try:
-            await target.bring_to_front()
-        except Exception:
-            pass
-        self._page = target
-        print(f"[{time.strftime('%H:%M:%S')}] ✅ CDP 已连接 {self.cdp_url} 页面: {target.url[:90]}",
+        # 定位 ML 页面：创建新页面确保使用正确店铺的 session（store open 后旧页面可能残留旧店数据）
+        if not self._browser.contexts:
+            raise StepError(step, "cli_error", "CDP 浏览器无可用 context")
+        self._context = self._browser.contexts[0]
+        # 关闭旧 ML 页面，创建全新页面
+        for p in list(self._context.pages):
+            if "mercadolibre" in (p.url or ""):
+                try:
+                    await p.close()
+                except Exception:
+                    pass
+        self._page = await self._context.new_page()
+        print(f"[{time.strftime('%H:%M:%S')}] ✅ CDP 已连接 {self.cdp_url}，新建页面",
               file=sys.stderr, flush=True)
 
     async def close(self) -> None:
