@@ -1167,6 +1167,7 @@ class Orchestrator:
             self._log(f"  ⚠️ {msg}")
             if self.state.record_id:
                 self.feishu.update_field(self.state.record_id, "状态", "失败")
+                self.feishu.update_field(self.state.record_id, "就绪", False)
                 self.feishu.update_step(self.state.record_id, f"失败：{msg}")
                 self.feishu.send_message(f"❌ FULL 货件失败: {msg}")
             raise StepError(3, "business", msg, recovery_attempted=["check_sku"])
@@ -1796,6 +1797,7 @@ class Orchestrator:
                 await self._screenshot_on_error(step)
                 if self.state.record_id:
                     self.feishu.update_field(self.state.record_id, "状态", "失败")
+                    self.feishu.update_field(self.state.record_id, "就绪", False)
                     self.feishu.update_step(self.state.record_id, f"失败：{exc.message}")
                     self.feishu.send_message(f"❌ FULL 货件失败: {exc.message}")
                 status = "failed" if not self.state.completed_steps else "partial"
