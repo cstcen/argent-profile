@@ -1450,6 +1450,8 @@ class Orchestrator:
                 continue
             if "产品标" in name or "箱" in name or "Envio-" in name or "Etiquetas-de-bultos" in name:
                 continue
+            if "listado" in name.lower() or "Descargar" in name or "preparation" in name.lower():
+                continue  # 产品列表PDF、下载说明PDF 都不是产品标签
             return pdf
         return None
 
