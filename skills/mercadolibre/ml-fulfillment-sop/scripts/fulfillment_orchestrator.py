@@ -1589,7 +1589,7 @@ class Orchestrator:
         store_info = STORE_MAP.get(self.state.store_name)
         if not store_info:
             store_info = STORE_MAP["3店"]  # 兜底
-        # 打开目标店铺（不用 --headless，确保每店独立CDP端口）
+        # 打开目标店铺
         try:
             result = subprocess.run(
                 ["ziniao-cli", "store", "open", "--name", store_info["name"]],
@@ -1597,21 +1597,71 @@ class Orchestrator:
             )
             data = json.loads(result.stdout)
             dl_path = data["data"]["downloadFolderPath"]
+            reused = data.get("data", {}).get("reused", False)
         except Exception as exc:
             raise StepError(1, "cli_error",
                             f"ziniao-cli store open 失败（店铺 {store_info['name']}）: {exc}") from exc
-        # 等待浏览器窗口就绪，从所有端口中找到目标店铺
-        port = None
-        for _ in range(10):
-            ports = _discover_cdp_ports()
-            if ports:
-                # 多端口场景：需要匹配目标店铺。暂时取最后一个（最新打开的窗口往往端口最大）
-                port = ports[-1]
-                break
-            time.sleep(1)
+        # 发现目标店铺的 CDP 端口
+        port = self._find_store_port(store_info["name"], reused)
         self._log(f"  店铺: {store_info['name']} (storeId={store_info['store_id']})")
         self._log(f"  下载目录: {dl_path}")
         return Path(dl_path), port
+
+    def _build_port_map(self) -> dict[str, int]:
+        """启动时一次性建立端口→店铺映射（遍历所有CDP端口，通过ML页面用户标识识别）。"""
+        ports = _discover_cdp_ports()
+        if len(ports) <= 1:
+            return {}  # 单端口无需映射
+        store_map = {}
+        # 用户标识→店铺名（基于已知映射）
+        USER_HINTS = {"HWHuang": "1店-子账号", "HXhuang": "2店-子账号", "SSILEIXIA": "3店-主账号"}
+        for port in ports:
+            try:
+                user = self._quick_identify_port(port)
+                for hint, store_name in USER_HINTS.items():
+                    if hint in (user or ""):
+                        store_map[store_name] = port
+                        break
+            except Exception:
+                pass
+        return store_map
+
+    def _quick_identify_port(self, port: int) -> Optional[str]:
+        """快速识别端口对应的店铺用户（同步阻塞，仅用于启动映射）。"""
+        import asyncio as _asyncio
+        try:
+            return _asyncio.run(self._async_identify_port(port))
+        except Exception:
+            return None
+
+    async def _async_identify_port(self, port: int) -> Optional[str]:
+        """异步识别端口对应的ML用户。"""
+        try:
+            from playwright.async_api import async_playwright  # noqa: F811
+            async with async_playwright() as pw:
+                browser = await pw.chromium.connect_over_cdp(f"http://127.0.0.1:{port}")
+                page = browser.contexts[0].pages[0]
+                try:
+                    await page.goto("https://myaccount.mercadolibre.com.mx/shipping/inbounds",
+                                   wait_until="domcontentloaded", timeout=15000)
+                except Exception:
+                    pass
+                await asyncio.sleep(1)
+                return await page.evaluate(
+                    "() => document.querySelector('[class*=user]')?.textContent?.trim()?.substring(0,60) || null"
+                )
+        except Exception:
+            return None
+
+    def _find_store_port(self, store_name: str, reused: bool) -> Optional[int]:
+        """找到目标店铺的CDP端口。优先用启动时缓存的映射，兜底取单个端口。"""
+        if not hasattr(self, '_port_map'):
+            self._port_map = self._build_port_map()
+        if store_name in self._port_map:
+            return self._port_map[store_name]
+        # 兜底：单端口场景
+        ports = _discover_cdp_ports()
+        return ports[0] if ports else None
 
     # ==================================================
     # 主流程
