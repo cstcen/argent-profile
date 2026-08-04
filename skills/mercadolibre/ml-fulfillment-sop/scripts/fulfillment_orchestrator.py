@@ -1141,7 +1141,11 @@ class Orchestrator:
         await self.browser.navigate(INBOUNDS_URL, step=2, wait_after=2.0)
         # 等待 inbounds 页面加载完成（main 容器出现）
         await self.browser.wait_for_selector("main, #root-app", timeout=15, action="inbounds_load")
-        await self.browser.click_with_fallback(2, "enviar_btn", "Enviar productos")
+        # 「Enviar productos」是 <a> 链接，可能有蒙层遮挡，用 force 点击
+        r = await self.browser.click_with_fallback(2, "enviar_btn", "Enviar productos")
+        if r != "clicked":
+            # force 重试（<a> 标签可能被遮挡）
+            await self.browser.page.locator("a").filter(has_text="Enviar productos").first.click(force=True)
         self._log("  Enviar productos 点击成功")
         # 处理 2店 广告弹窗：点「Continuar」关闭（无弹窗时页面上可能有同名按钮，点一次无害）
         await asyncio.sleep(1.5)
@@ -1358,19 +1362,17 @@ class Orchestrator:
                         recovery_attempted=["gray_circle_flip_2"])
 
     async def _dismiss_overlay(self) -> None:
-        """关闭页面教程/广告蒙层（点击右上角关闭按钮）。"""
+        """关闭页面教程/广告蒙层（ML Andes coachmarks 组件）。"""
         try:
-            # 尝试多种常见的关闭按钮
-            for sel in [
-                'button[class*="close"]', '[class*="close"][class*="button"]',
-                '[aria-label*="Cerrar"]', '[aria-label*="cerrar"]',
-                '[data-testid*="close"]', 'button:has([class*=close])',
-            ]:
-                btn = self.browser.page.locator(sel).first
-                if await btn.count() > 0 and await btn.is_visible():
-                    await btn.click()
-                    await asyncio.sleep(0.5)
-                    return
+            # ML 教程蒙层：aria-label="Close" + class=andes-coach-marks
+            close_btn = self.browser.page.locator(
+                '[aria-label="Close"], .andes-coach-marks__step__close-button, '
+                '#coachmarks-fast-shipping-hero-step-close-button'
+            ).first
+            if await close_btn.count() > 0 and await close_btn.is_visible():
+                await close_btn.click(force=True)
+                await asyncio.sleep(0.5)
+                self._log("  已关闭教程蒙层")
         except Exception:
             pass
 
