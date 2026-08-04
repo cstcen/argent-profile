@@ -1402,7 +1402,7 @@ class Orchestrator:
             "产品标签",
             f"产品标+{self.state.sku}+{self.state.ml_code}+{self._safe_name(self.state.name)}+{store_tag}.pdf",
             pattern="*Etiquetas-de-producto*.pdf",
-            exclude=r"Etiquetas-de-bultos",)
+            exclude=None,)
         self._mark_done(6)
         if self.state.record_id:
             self.feishu.send_message("✅ 步骤6完成: 产品标签已上传")
@@ -1486,28 +1486,26 @@ class Orchestrator:
             return dl_dir, {p.name for p in dl_dir.glob("*.pdf")}
         return dl_dir, set()
 
-    def _find_new_pdf(self, dl_dir: Path, before: set[str], exclude: str = "") -> Optional[Path]:
-        """比较下载目录，返回最新增的 PDF（排除箱唛和已处理文件）。"""
+    def _find_new_pdf(self, dl_dir: Path, before: set[str], exclude: Optional[str] = "") -> Optional[Path]:
+        """比较下载目录，返回新增的 PDF（跳过已处理文件）。"""
         if not dl_dir.exists():
             return None
         after = {p.name: p for p in dl_dir.glob("*.pdf")}
         new_names = set(after.keys()) - before
-        if not new_names:
-            return None
         for name in sorted(new_names):
-            pdf = after[name]
             if exclude and re.search(exclude, name):
                 continue
-            if "产品标" in name or "箱" in name or "Etiquetas-de-bultos" in name:
+            # 跳过已处理文件（已重命名）
+            if "产品标" in name or "箱" in name:
                 continue
             if "listado" in name.lower() or "Descargar" in name or "preparation" in name.lower():
-                continue  # 产品列表PDF、下载说明PDF 都不是产品标签
-            return pdf
+                continue
+            return after[name]
         return None
 
     async def _download_and_upload(self, field_name: str, rename_to: str,
                              pattern: str = "*.pdf",
-                             exclude: str = "",
+                             exclude: Optional[str] = "",
                              download_trigger: Optional[Callable[[], Any]] = None) -> bool:
         """通用下载+上传：下载前快照→触发下载→等待→找新PDF→重命名→上传。
         
