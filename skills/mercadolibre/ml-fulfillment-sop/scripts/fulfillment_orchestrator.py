@@ -1401,8 +1401,8 @@ class Orchestrator:
         await self._download_and_upload(
             "产品标签",
             f"产品标+{self.state.sku}+{self.state.ml_code}+{self._safe_name(self.state.name)}+{store_tag}.pdf",
-            pattern="Etiquetas-de-producto-*.pdf",
-            exclude=r"Etiquetas-de-bultos|Envio-")
+            pattern="*Etiquetas-de-producto*.pdf",
+            exclude=r"Etiquetas-de-bultos",)
         self._mark_done(6)
         if self.state.record_id:
             self.feishu.send_message("✅ 步骤6完成: 产品标签已上传")
@@ -1498,7 +1498,7 @@ class Orchestrator:
             pdf = after[name]
             if exclude and re.search(exclude, name):
                 continue
-            if "产品标" in name or "箱" in name or "Envio-" in name or "Etiquetas-de-bultos" in name:
+            if "产品标" in name or "箱" in name or "Etiquetas-de-bultos" in name:
                 continue
             if "listado" in name.lower() or "Descargar" in name or "preparation" in name.lower():
                 continue  # 产品列表PDF、下载说明PDF 都不是产品标签
@@ -1531,7 +1531,7 @@ class Orchestrator:
                 for pdf in all_pdfs:
                     if exclude and re.search(exclude, pdf.name):
                         continue
-                    if "产品标" in pdf.name or "箱" in pdf.name or "Envio-" in pdf.name:
+                    if "产品标" in pdf.name or "箱" in pdf.name or "Etiquetas-de-bultos" in pdf.name:
                         continue
                     candidates = [pdf]
                     break
