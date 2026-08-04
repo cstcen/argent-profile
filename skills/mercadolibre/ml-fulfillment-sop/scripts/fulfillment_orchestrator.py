@@ -1171,8 +1171,11 @@ class Orchestrator:
                 self.feishu.send_message(f"❌ FULL 货件失败: {msg}")
             raise StepError(3, "business", msg, recovery_attempted=["check_sku"])
         # 3c. 等 quantity input（ANDES 输入框，无 placeholder = 数量输入）
-        qty_sel = 'input[class*="andes-form-control"]:not([placeholder])'
-        await self.browser.page.wait_for_selector(qty_sel, timeout=5)
+        try:
+            await self.browser.page.wait_for_selector(
+                'input[class*="andes-form-control"]:not([placeholder])', timeout=5000)
+        except Exception:
+            pass  # 输入框已存在或选择器不匹配，fill_with_fallback 会兜底
         await self.browser.fill_with_fallback(3, "qty_input", self.state.qty, wait_after=1.0)
         self._log("  等待 Continuar 按钮启用...")
         await asyncio.sleep(3.0)
