@@ -1247,7 +1247,7 @@ class Orchestrator:
                                 recovery_attempted=[f"gray_circle_flip_{flip}"])
             days = self.browser.page.locator("div.day")
             n = await days.count()
-            target = idx + 30
+            target = idx + 31  # 确保至少31天后（表头占7格，+30可能不够）
             if target >= n:
                 if flip == 0:
                     await self._flip_month()
