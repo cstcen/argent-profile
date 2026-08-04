@@ -1563,15 +1563,15 @@ class Orchestrator:
             self._log(f"  文件已重命名（未上传）: {renamed.name}")
             return False
 
-    def _open_store(self) -> Path:
-        """切换到目标店铺（不关店，紫鸟单进程只需切换 profile，reused=true 极快）。"""
+    def _open_store(self) -> tuple[Path, Optional[int]]:
+        """切换到目标店铺（可见窗口，每店独立CDP端口）。不关店，频繁关店可能触发ML安全检测。"""
         store_info = STORE_MAP.get(self.state.store_name)
         if not store_info:
             store_info = STORE_MAP["3店"]  # 兜底
-        # 切换到目标店铺（不先关店——频繁关店可能触发美客多安全检测）
+        # 打开目标店铺（不用 --headless，确保每店独立CDP端口）
         try:
             result = subprocess.run(
-                ["ziniao-cli", "store", "open", "--name", store_info["name"], "--headless"],
+                ["ziniao-cli", "store", "open", "--name", store_info["name"]],
                 capture_output=True, text=True, timeout=60,
             )
             data = json.loads(result.stdout)
@@ -1579,9 +1579,16 @@ class Orchestrator:
         except Exception as exc:
             raise StepError(1, "cli_error",
                             f"ziniao-cli store open 失败（店铺 {store_info['name']}）: {exc}") from exc
+        # 等待浏览器窗口就绪，发现CDP端口
+        port = None
+        for _ in range(10):
+            port = _discover_cdp_port()
+            if port:
+                break
+            time.sleep(1)
         self._log(f"  店铺: {store_info['name']} (storeId={store_info['store_id']})")
         self._log(f"  下载目录: {dl_path}")
-        return Path(dl_path)
+        return Path(dl_path), port
 
     # ==================================================
     # 主流程
@@ -1631,10 +1638,10 @@ class Orchestrator:
 
         # 根据店铺名称启动紫鸟店铺（仅一次），获取下载目录；随后 CDP 接管浏览器
         try:
-            self._dl_dir = self._open_store()
-            # 发现 CDP 端口（不关店时端口不会变）
-            port = _discover_cdp_port()
-            self.browser.cdp_url = f"http://127.0.0.1:{port}" if port else DEFAULT_CDP_URL
+            self._dl_dir, port = self._open_store()
+            if not port:
+                raise StepError(1, "cli_error", "CDP 端口未发现（浏览器窗口可能未就绪）")
+            self.browser.cdp_url = f"http://127.0.0.1:{port}"
             self._log(f"  CDP 端口: {self.browser.cdp_url}")
             await self.browser.connect(download_dir=str(self._dl_dir))
         except StepError as exc:
