@@ -1107,6 +1107,9 @@ class Orchestrator:
         except StepError:
             self.state.ml_code = "UNKNOWN"
         self._log(f"  ML码: {self.state.ml_code}")
+        # 等搜索结果页完全加载（搜索可能触发页面导航）
+        qty_chain = self.sel.chain(3, "qty_input")
+        await self.browser.wait_for_selector(qty_chain[0], timeout=20, action="qty_input_after_search")
         # 3b. 填写数量
         await self.browser.fill_with_fallback(3, "qty_input", self.state.qty, wait_after=1.0)
         # 等待按钮变为 enabled（填数量后约 3 秒）
