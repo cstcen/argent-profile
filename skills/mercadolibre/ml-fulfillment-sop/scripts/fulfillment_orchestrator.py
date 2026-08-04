@@ -976,6 +976,7 @@ class RunState:
     shipment_id: str = ""
     ml_code: str = "UNKNOWN"
     store_name: str = ""
+    inbound_id: str = ""
     completed_steps: list[int] = field(default_factory=list)
     files_uploaded: dict[str, str] = field(default_factory=dict)
     dry_run_notes: list[str] = field(default_factory=list)
@@ -1132,12 +1133,20 @@ class Orchestrator:
                             recovery_attempted=["poll_10x"])
         await self.browser.click_with_fallback(3, "plan_modal_btn",
                                                "Continuar con mi plan actual", wait_after=3.0)
-        # 3e. 货件号（URL /plans/(\d+)/，兜底 8 位数字）
+        # 3e. 货件号（页面DOM标题提取） + inbound ID（URL提取，用于预约页导航）
         shipment = await self.browser.evaluate(JS_EXTRACT_SHIPMENT_ID, step=3)
         if shipment == "UNKNOWN" or not shipment:
-            raise StepError(3, "business", "未从 URL 提取到货件号", recovery_attempted=["url_regex"])
+            raise StepError(3, "business", "未从页面提取到货件号", recovery_attempted=["dom_regex"])
         self.state.shipment_id = shipment
-        self._log(f"  货件号: {shipment}")
+        # 同时提取 inbound ID（预约页需要 inbound ID 非货件号）
+        try:
+            inbound = await self.browser.evaluate(
+                "(function(){var m=location.href.match(/\/inbounds\/(\d+)/);return m?m[1]:'';})();", step=3)
+            if inbound and inbound != "null":
+                self.state.inbound_id = inbound
+        except StepError:
+            pass
+        self._log(f"  货件号: {shipment}" + (f" inbound={self.state.inbound_id}" if self.state.inbound_id else ""))
         self.feishu.update_field(self.state.record_id, "货件号", shipment)
         self._mark_done(3)
         if self.state.record_id:
@@ -1150,7 +1159,7 @@ class Orchestrator:
     async def step4_appointment(self) -> None:
         self._log("步骤4 货件预约时间")
         # 4a. 进入预约页（优先用货件号拼 URL，其次从 URL 提取 inbound ID）
-        await self.browser.visit_plan_page("appointment-v2", self.state.shipment_id, step=4)
+        await self.browser.visit_plan_page("appointment-v2", self.state.inbound_id or self.state.shipment_id, step=4)
         await asyncio.sleep(3)
         # 等待预约页加载（轮询运输方式下拉框）
         dd_chain = self.sel.chain(4, "shipment_dropdown")
