@@ -1170,9 +1170,8 @@ class Orchestrator:
                 self.feishu.update_step(self.state.record_id, f"失败：{msg}")
                 self.feishu.send_message(f"❌ FULL 货件失败: {msg}")
             raise StepError(3, "business", msg, recovery_attempted=["check_sku"])
-        # 3c. 等 quantity input + 填数量
-        qty_chain = self.sel.chain(3, "qty_input")
-        await self.browser.wait_for_selector(qty_chain[0], timeout=20, action="qty_input_after_search")
+        # 3c. 等 quantity input（搜索完成后一定存在）
+        await self.browser.page.wait_for_selector('input[type="number"]', timeout=5)
         await self.browser.fill_with_fallback(3, "qty_input", self.state.qty, wait_after=1.0)
         self._log("  等待 Continuar 按钮启用...")
         await asyncio.sleep(3.0)
