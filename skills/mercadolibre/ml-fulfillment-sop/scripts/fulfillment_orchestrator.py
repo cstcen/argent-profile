@@ -1116,23 +1116,9 @@ class Orchestrator:
     # 步骤 2：点击 Enviar productos 进入创建入口（只读导航）
     # ==================================================
     async def step2_entry(self) -> None:
-        self._log("步骤2 货件创建入口：点击 Enviar productos")
-        await self.browser.navigate(INBOUNDS_URL, step=2, wait_after=2.0)
-        await self.browser.click_with_fallback(2, "enviar_btn", "Enviar productos")
-        self._log("  Enviar productos 点击成功")
-        # 处理可能的广告弹窗（2店有明星产品弹窗）：关闭或跳过
-        await asyncio.sleep(1)
-        try:
-            close_btn = self.browser.page.locator("button").filter(has_text="Continuar")
-            if await close_btn.count() > 0:
-                await close_btn.first.click()
-                self._log("  已关闭弹窗")
-                await asyncio.sleep(1)
-        except Exception:
-            pass
-        # 等待导航到 Planificación 页面
-        sku_chain = self.sel.chain(3, "sku_input")
-        await self._wait_any_selector(2, "planificacion_page", sku_chain)
+        self._log("步骤2 货件创建入口：直接进入 SKU 搜索页")
+        search_url = f"https://www.mercadolibre.com.mx/publicaciones/listado/shipment_planning/plans?search={self.state.sku}"
+        await self.browser.navigate(search_url, step=2, wait_after=3.0)
         self._mark_done(2)
 
     # ==================================================
@@ -1140,10 +1126,20 @@ class Orchestrator:
     # ==================================================
     async def step3_select_product(self) -> None:
         self._log("步骤3 选择产品与数量")
-        # 3a. 搜索 SKU（fill + Enter，页面已在 planificación 页）
-        await self.browser.fill_with_fallback(3, "sku_input", self.state.sku,
-                                              press_enter=True, wait_after=3.0)
-        self._log(f"  SKU {self.state.sku} 已搜索")
+        # 搜索已在步2完成（URL query），检测搜索结果
+        has_results = await self.browser.page.evaluate(
+            """() => {
+                const body = document.body.textContent;
+                return body.includes('ZZD-MX-022') || document.querySelector('td') !== null;
+            }"""
+        )
+        if not has_results:
+            msg = f"SKU {self.state.sku} 在店铺 {self.state.store_name} 未找到"
+            self._log(f"  ⚠️ {msg}")
+            if self.state.record_id:
+                self.feishu.update_step(self.state.record_id, f"失败：{msg}")
+                self.feishu.send_message(f"❌ FULL 货件失败: {msg}")
+            raise StepError(3, "business", msg, recovery_attempted=["check_sku"])
         # 提取 ML 码（非关键，失败 UNKNOWN 兜底）
         try:
             self.state.ml_code = await self.browser.evaluate(JS_EXTRACT_ML_CODE, step=3)
