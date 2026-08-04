@@ -352,18 +352,20 @@ class PlaywrightClient:
                 })
             except Exception:
                 pass
-        # 定位 ML 页面：创建新页面确保使用正确店铺的 session（store open 后旧页面可能残留旧店数据）
+        # 定位 ML 页面：先创建新页面确保使用正确店铺 session，再关旧页面
         if not self._browser.contexts:
             raise StepError(step, "cli_error", "CDP 浏览器无可用 context")
         self._context = self._browser.contexts[0]
-        # 关闭旧 ML 页面，创建全新页面
+        # 先创建新页面（确保 session 来自当前活跃店铺），再关闭旧 ML 页面
+        self._page = await self._context.new_page()
         for p in list(self._context.pages):
+            if p is self._page:
+                continue
             if "mercadolibre" in (p.url or ""):
                 try:
                     await p.close()
                 except Exception:
                     pass
-        self._page = await self._context.new_page()
         print(f"[{time.strftime('%H:%M:%S')}] ✅ CDP 已连接 {self.cdp_url}，新建页面",
               file=sys.stderr, flush=True)
 
