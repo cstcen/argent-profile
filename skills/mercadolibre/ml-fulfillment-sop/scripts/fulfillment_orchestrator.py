@@ -1130,7 +1130,10 @@ class Orchestrator:
         has_results = await self.browser.page.evaluate(
             """() => {
                 const body = document.body.textContent;
-                return body.includes('ZZD-MX-022') || document.querySelector('td') !== null;
+                // 有「0 productos」或「0 u. (0 productos)」表示无结果
+                if (/0\\s*(productos|u\\.)/i.test(body)) return false;
+                // 有数量输入框表示有结果
+                return document.querySelector('input[type=\"number\"]') !== null;
             }"""
         )
         if not has_results:
