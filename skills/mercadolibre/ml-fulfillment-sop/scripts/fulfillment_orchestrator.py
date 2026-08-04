@@ -212,9 +212,6 @@ STEP_FALLBACKS: dict[int, dict[str, tuple[Optional[str], list[str]]]] = {
         "enviar_btn": ("enviarBtnSelector", []),
     },
     3: {
-        "sku_input": (None, ['input[placeholder*="Buscar por producto"]',
-                             'input[placeholder*="SKU"]',
-                             'input[placeholder*="搜索"]']),
         "qty_input": (None, ['input.andes-form-control__field[type="text"]:not([placeholder])',
                              'input[class*="andes-form-control"]:not([placeholder])',
                              'input[id^="_r_"], input[id^="_R_"]',
