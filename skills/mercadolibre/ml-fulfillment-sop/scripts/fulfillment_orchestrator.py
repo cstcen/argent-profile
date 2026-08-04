@@ -1545,11 +1545,11 @@ class Orchestrator:
         store_info = STORE_MAP.get(self.state.store_name)
         if not store_info:
             store_info = STORE_MAP["3店"]  # 兜底
-        # 关闭所有已开店铺
-        for name in ["1店-子账号", "2店-子账号", "3店-主账号"]:
+        # 关闭所有已开店铺（使用 storeId，不是 name）
+        for sid in ["27477945046190", "27494792824433", "27581021073442"]:
             try:
                 subprocess.run(
-                    ["ziniao-cli", "store", "close", "--name", name],
+                    ["ziniao-cli", "store", "close", "--id", sid],
                     capture_output=True, text=True, timeout=15,
                 )
             except Exception:
