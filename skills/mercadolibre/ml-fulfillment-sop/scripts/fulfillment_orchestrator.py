@@ -399,20 +399,22 @@ class PlaywrightClient:
             await asyncio.sleep(wait_after)
 
     async def visit_plan_page(self, path: str, shipment_id: str, step: int) -> None:
-        """访问货件子页面：优先用已知货件号拼 URL，其次从当前 URL 提取 inbound ID。"""
-        url = ""
+        """访问货件子页面：优先用货件号拼 URL，失败则经 hub-v2 中转。"""
         if shipment_id:
+            # 直接尝试目标 URL
             url = f"{ML_BASE_URL}/shipping/inbounds/{shipment_id}/{path}"
+            await self.navigate(url, step=step)
+            # 验证是否成功到达（ML 可能重定向到无关页面如 /details）
+            current = await self.current_url()
+            if path in current:
+                return
+            print(f"[{time.strftime('%H:%M:%S')}]   直接导航被重定向到 {current}，改经 hub-v2 中转",
+                  file=sys.stderr, flush=True)
+            # 经 hub 中转
+            await self.navigate(f"{ML_BASE_URL}/shipping/inbounds/{shipment_id}/hub-v2", step=step)
+            await asyncio.sleep(2)
         else:
-            try:
-                m = await self.evaluate(
-                    "(function(){var m=location.href.match(/\\/inbounds\\/(\\d+)/);return m?m[1]:'';})();",
-                    step=step)
-            except StepError:
-                m = ""
-            url = (f"{ML_BASE_URL}/shipping/inbounds/{m}/{path}" if m
-                   else f"{ML_BASE_URL}/shipping/{path}")
-        await self.navigate(url, step=step)
+            await self.navigate(f"{ML_BASE_URL}/shipping/{path}", step=step)
 
     # ---- 点击 ----
 
