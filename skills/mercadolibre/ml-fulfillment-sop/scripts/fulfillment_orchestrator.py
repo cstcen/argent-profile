@@ -1098,9 +1098,9 @@ class Orchestrator:
     # ==================================================
     async def step3_select_product(self) -> None:
         self._log("步骤3 选择产品与数量")
-        # 3a. 搜索 SKU（fill + Enter，原生触发 React 搜索）
-        await self.browser.fill_with_fallback(3, "sku_input", self.state.sku,
-                                              press_enter=True, wait_after=3.0)
+        # 3a. 搜索 SKU：直接用 URL query 参数（比 fill input + Enter 更可靠）
+        search_url = f"https://www.mercadolibre.com.mx/publicaciones/listado/shipment_planning/plans?search={self.state.sku}"
+        await self.browser.navigate(search_url, step=3, wait_after=3.0)
         self._log(f"  SKU {self.state.sku} 已搜索")
         # 提取 ML 码（非关键，失败 UNKNOWN 兜底）
         try:
@@ -1163,7 +1163,7 @@ class Orchestrator:
     async def step4_appointment(self) -> None:
         self._log("步骤4 货件预约时间")
         # 4a. 进入预约页（优先用货件号拼 URL，其次从 URL 提取 inbound ID）
-        await self.browser.visit_plan_page("appointment-v2", self.state.inbound_id or self.state.shipment_id, step=4)
+        await self.browser.visit_plan_page("appointment-v2", self.state.shipment_id, step=4)
         await asyncio.sleep(3)
         # 等待预约页加载（轮询运输方式下拉框）
         dd_chain = self.sel.chain(4, "shipment_dropdown")
