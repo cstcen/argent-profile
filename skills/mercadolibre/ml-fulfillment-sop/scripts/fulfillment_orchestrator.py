@@ -215,8 +215,8 @@ STEP_FALLBACKS: dict[int, dict[str, tuple[Optional[str], list[str]]]] = {
         "sku_input": (None, ['input[placeholder*="Buscar por producto"]',
                              'input[placeholder*="SKU"]',
                              'input[placeholder*="搜索"]']),
-        "qty_input": (None, ['input[type="number"]',
-                             'input[id^="_r_"][class*="andes-form-control"]']),
+        "qty_input": (None, ['input[id^="_r_"], input[id^="_R_"]',
+                             'input[type="number"]']),
         "continuar_btn": (None, ["button"]),          # textContent === "Continuar" && !disabled
         "plan_modal_btn": (None, ["button"]),         # textContent === "Continuar con mi plan actual"
     },
@@ -1171,8 +1171,8 @@ class Orchestrator:
                 self.feishu.update_step(self.state.record_id, f"失败：{msg}")
                 self.feishu.send_message(f"❌ FULL 货件失败: {msg}")
             raise StepError(3, "business", msg, recovery_attempted=["check_sku"])
-        # 3c. 等 quantity input（搜索完成后一定存在）
-        await self.browser.page.wait_for_selector('input[type="number"]', timeout=5)
+        # 3c. 等 quantity input（ML 为普通 text input，非 type=number）
+        await self.browser.page.wait_for_selector('input[id^="_r_"], input[id^="_R_"]', timeout=5)
         await self.browser.fill_with_fallback(3, "qty_input", self.state.qty, wait_after=1.0)
         self._log("  等待 Continuar 按钮启用...")
         await asyncio.sleep(3.0)
