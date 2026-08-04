@@ -1386,8 +1386,20 @@ class Orchestrator:
         return re.sub(r'[\\/:*?"<>|\r\n]+', "_", name).strip() or "产品"
 
     def _upload_latest_pdf(self, pattern: str, rename_to: str, field_name: str) -> None:
-        """从下载目录找最新匹配的 PDF，重命名后上传到飞书 Base 附件字段。"""
-        dl_dir = Path(self.cfg.ziniaodl)
+        """从下载目录找最新匹配的 PDF，重命名后上传到飞书 Base 附件字段。
+        
+        紫鸟下载目录按店铺分文件夹：ziniaobrowserdatas/{店铺名}/
+        使用 Base 记录的店铺名称定位正确目录。
+        """
+        # 基础路径（去掉旧配置中硬编码的店铺子目录）
+        base = Path(self.cfg.ziniaodl)
+        store = self.state.store_name.strip() if self.state.store_name else ""
+        if store:
+            dl_dir = base.parent / store
+            if not dl_dir.exists():
+                dl_dir = base  # 店铺目录不存在，用配置默认
+        else:
+            dl_dir = base
         if not dl_dir.exists():
             self._log(f"  ⚠️ 下载目录不存在: {dl_dir}")
             return
