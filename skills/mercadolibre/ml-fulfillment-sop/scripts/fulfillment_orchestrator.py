@@ -1116,13 +1116,10 @@ class Orchestrator:
     # 步骤 2：点击 Enviar productos 进入创建入口（只读导航）
     # ==================================================
     async def step2_entry(self) -> None:
-        self._log("步骤2 货件创建入口：点击 Enviar productos")
-        await self.browser.navigate(INBOUNDS_URL, step=2, wait_after=2.0)
-        await self.browser.click_with_fallback(2, "enviar_btn", "Enviar productos")
-        self._log("  Enviar productos 点击成功")
-        # 等待导航到 Planificación 页面（轮询搜索框出现）
-        sku_chain = self.sel.chain(3, "sku_input")
-        await self._wait_any_selector(2, "planificacion_page", sku_chain)
+        self._log("步骤2 货件创建入口：直接进入 SKU 搜索页")
+        # 跳过「Enviar productos」按钮（2店有广告弹窗），直接用 URL 搜索
+        search_url = f"https://www.mercadolibre.com.mx/publicaciones/listado/shipment_planning/plans?search={self.state.sku}"
+        await self.browser.navigate(search_url, step=2, wait_after=3.0)
         self._mark_done(2)
 
     # ==================================================
@@ -1130,10 +1127,7 @@ class Orchestrator:
     # ==================================================
     async def step3_select_product(self) -> None:
         self._log("步骤3 选择产品与数量")
-        # 3a. 搜索 SKU：直接用 URL query 参数（比 fill input + Enter 更可靠）
-        search_url = f"https://www.mercadolibre.com.mx/publicaciones/listado/shipment_planning/plans?search={self.state.sku}"
-        await self.browser.navigate(search_url, step=3, wait_after=3.0)
-        self._log(f"  SKU {self.state.sku} 已搜索")
+        # 步 2 已导航到搜索页，这里只需等页面稳定后提取 ML 码
         # 提取 ML 码（非关键，失败 UNKNOWN 兜底）
         try:
             self.state.ml_code = await self.browser.evaluate(JS_EXTRACT_ML_CODE, step=3)
