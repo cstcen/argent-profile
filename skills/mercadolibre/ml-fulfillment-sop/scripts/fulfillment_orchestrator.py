@@ -55,8 +55,29 @@ INBOUNDS_URL = f"{ML_BASE_URL}/shipping/inbounds"
 DEFAULT_CDP_URL = "http://127.0.0.1:52420"
 
 
+def _discover_cdp_ports() -> list[int]:
+    """从 ziniaobro 进程发现所有 CDP 调试端口。"""
+    try:
+        out = subprocess.run(
+            ["lsof", "-i", "-P", "-n"],
+            capture_output=True, text=True, timeout=10,
+        )
+        ports = []
+        for line in out.stdout.splitlines():
+            if "ziniaobro" in line and "LISTEN" in line:
+                m = re.search(r":(\d+)\s", line)
+                if m:
+                    ports.append(int(m[1]))
+        return ports
+    except Exception:
+        return []
+
+
 def _discover_cdp_port() -> Optional[int]:
-    """从 ziniaobro 进程自动发现 CDP 调试端口（每次重启紫鸟端口随机变化）。"""
+    """从 ziniaobro 进程自动发现 CDP 调试端口（每次重启紫鸟端口随机变化）。
+    
+    多店铺场景使用 _discover_cdp_ports() + _identify_port()。
+    """
     try:
         out = subprocess.run(
             ["lsof", "-i", "-P", "-n"],
@@ -1579,11 +1600,13 @@ class Orchestrator:
         except Exception as exc:
             raise StepError(1, "cli_error",
                             f"ziniao-cli store open 失败（店铺 {store_info['name']}）: {exc}") from exc
-        # 等待浏览器窗口就绪，发现CDP端口
+        # 等待浏览器窗口就绪，从所有端口中找到目标店铺
         port = None
         for _ in range(10):
-            port = _discover_cdp_port()
-            if port:
+            ports = _discover_cdp_ports()
+            if ports:
+                # 多端口场景：需要匹配目标店铺。暂时取最后一个（最新打开的窗口往往端口最大）
+                port = ports[-1]
                 break
             time.sleep(1)
         self._log(f"  店铺: {store_info['name']} (storeId={store_info['store_id']})")
