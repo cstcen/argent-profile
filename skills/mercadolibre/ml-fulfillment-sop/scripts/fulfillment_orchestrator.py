@@ -1063,6 +1063,19 @@ class Orchestrator:
         }
         self._log(f"  货件数={len(shipments)} 过期={len(expired)} "
                   f"En preparación={len(in_prep)} 库容警告={bool(warning)}")
+        # 检查当前货件是否已完成（Reserva cancelada 等终态）
+        if self.state.shipment_id:
+            for s in shipments:
+                if s["id"] == self.state.shipment_id:
+                    status = s.get("status", "")
+                    if status in ("Reserva cancelada", "Procesamiento finalizado", "Cancelado"):
+                        self._log(f"  货件 #{self.state.shipment_id} 状态={status}，已走完流程")
+                        if self.state.record_id:
+                            self.feishu.update_field(self.state.record_id, "状态", "已完成")
+                            self.feishu.update_step(self.state.record_id, "全部完成（已有终态）")
+                            self.feishu.update_field(self.state.record_id, "就绪", False)
+                        return {"status": "already_completed", "shipment_status": status}
+                    break
         self._mark_done(1)
         return summary
 
@@ -1282,6 +1295,13 @@ class Orchestrator:
             return
         await self.browser.visit_plan_page("labeling", self.state.shipment_id, step=6)
         await asyncio.sleep(3)
+        # 提取 ML 码（产品标页面有完整产品信息）
+        if self.state.ml_code == "UNKNOWN":
+            try:
+                self.state.ml_code = await self.browser.evaluate(JS_EXTRACT_ML_CODE, step=6)
+            except StepError:
+                pass
+            self._log(f"  ML码: {self.state.ml_code}")
         # 6-1. 勾选所有 checkbox（原生 click，替代 fiber onChange hack）
         r = await self.browser.click_checkboxes_with_fallback(6, "checkboxes", wait_after=2.0)
         if not r.startswith("checked"):
@@ -1531,7 +1551,12 @@ class Orchestrator:
                     if not self._guard_write(step, allow_write, dry_run):
                         continue
                 if step == 1:
-                    step_summaries[1] = await self.step1_prepare()
+                    s1 = await self.step1_prepare()
+                    if isinstance(s1, dict) and s1.get("status") == "already_completed":
+                        self._log(f"  货件已完成，跳过后续步骤")
+                        return self._result("success", failed_step=None, error=None,
+                                            step_summaries={1: s1}, dry_run=dry_run)
+                    step_summaries[1] = s1
                 elif step == 2:
                     await self.step2_entry()
                 elif step == 3:
