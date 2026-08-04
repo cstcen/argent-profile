@@ -447,8 +447,22 @@ class PlaywrightClient:
             await self.page.wait_for_selector("main, #root-app", timeout=15000)
         except Exception:
             pass
+        # 等待旋转蒙层消失（比纯 sleep 更准确反映页面就绪）
+        await self._wait_spinner_gone(timeout=timeout)
         if wait_after:
             await asyncio.sleep(wait_after)
+
+    async def _wait_spinner_gone(self, timeout: int = 30) -> None:
+        """等待 ML 页面切换旋转蒙层出现→消失。日历等子组件加载不用此方法。"""
+        spinner = self.page.locator(
+            '[class*=spinner], [class*=spin], [class*=loading], '
+            '.andes-spinner, [role=progressbar], [aria-busy=true]'
+        )
+        try:
+            await spinner.first.wait_for(state="visible", timeout=5000)
+            await spinner.first.wait_for(state="hidden", timeout=timeout * 1000)
+        except Exception:
+            pass
 
     async def visit_plan_page(self, path: str, shipment_id: str, step: int) -> None:
         """访问货件子页面：用货件号拼 URL。"""
