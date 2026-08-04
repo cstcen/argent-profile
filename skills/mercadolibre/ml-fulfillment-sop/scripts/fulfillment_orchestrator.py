@@ -1149,10 +1149,14 @@ class Orchestrator:
         await self.browser.fill_with_fallback(3, "sku_input", self.state.sku,
                                               press_enter=True, wait_after=3.0)
         self._log(f"  SKU {self.state.sku} 已搜索")
-        # 检测搜索结果：有数量输入框 = 成功，否则发送通知并停止
-        await asyncio.sleep(1)
+        # 检测搜索结果：「1 resultado」或 number input = 成功
+        await asyncio.sleep(2)
         has_results = await self.browser.page.evaluate(
-            "() => document.querySelector('input[type=\"number\"]') !== null"
+            """() => {
+                const body = document.body.textContent || '';
+                if (body.includes('1 resultado') || body.includes('resultados')) return true;
+                return document.querySelector('input[type="number"]') !== null;
+            }"""
         )
         if not has_results:
             msg = f"SKU {self.state.sku} 在店铺 {self.state.store_name} 未找到"
