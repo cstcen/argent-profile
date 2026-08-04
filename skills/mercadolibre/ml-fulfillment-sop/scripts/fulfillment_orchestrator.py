@@ -321,7 +321,7 @@ class PlaywrightClient:
             raise StepError(0, "cli_error", "Playwright 尚未连接（先调用 connect()）")
         return self._page
 
-    async def connect(self, step: int = 0) -> None:
+    async def connect(self, step: int = 0, download_dir: Optional[str] = None) -> None:
         """连接 CDP 浏览器并定位 ML 页面（延迟连接：首次使用时调用）。"""
         try:
             from playwright.async_api import async_playwright
@@ -342,6 +342,16 @@ class PlaywrightClient:
             raise StepError(step, "cli_error",
                             f"CDP 连接失败 {self.cdp_url}: {exc}",
                             recovery_attempted=["connect_over_cdp"]) from exc
+        # 设置下载目录（CDP 直连时浏览器不会自动使用 ziniao-cli store open 的目录）
+        if download_dir:
+            try:
+                cdp = await self._browser.new_browser_cdp_session()
+                await cdp.send("Browser.setDownloadBehavior", {
+                    "behavior": "allow",
+                    "downloadPath": download_dir,
+                })
+            except Exception:
+                pass
         # 定位 ML 页面（跨所有 context）：优先 mercadolibre.com.mx，其次 mercadolibre.com
         target, self._context = None, None
         for ctx in self._browser.contexts:
@@ -1576,7 +1586,7 @@ class Orchestrator:
         # 根据店铺名称启动紫鸟店铺（仅一次），获取下载目录；随后 CDP 接管浏览器
         try:
             self._dl_dir = self._open_store()
-            await self.browser.connect()
+            await self.browser.connect(download_dir=str(self._dl_dir))
         except StepError as exc:
             return self._result("failed", failed_step=step_filter or 1, error=exc.to_dict(),
                                 step_summaries={}, dry_run=dry_run)
