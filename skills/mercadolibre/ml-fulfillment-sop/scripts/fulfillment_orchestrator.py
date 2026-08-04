@@ -74,6 +74,14 @@ STEP_NAMES: dict[int, str] = {
 # 配置
 # ────────────────────────────────────────────────
 
+# 店铺名称 → 紫鸟店铺映射（飞书「店铺名称」字段 1店/2店/3店）
+STORE_MAP = {
+    "1店": {"name": "1店-子账号", "store_id": "27477945046190"},
+    "2店": {"name": "2店-子账号", "store_id": "27494792824433"},
+    "3店": {"name": "3店-主账号", "store_id": "27581021073442"},
+}
+
+
 @dataclass
 class Config:
     """运行配置。优先环境变量，其次本地 env 文件（~/.hermes/scripts/fulfillment.env）。"""
@@ -991,6 +999,7 @@ class Orchestrator:
         self.browser = PlaywrightClient(cfg, selectors)
         self.feishu = FeishuClient(cfg)
         self.state = RunState()
+        self._dl_dir: Optional[Path] = None  # 由 _open_store() 设置（store open 返回的下载目录）
 
     # ---- 日志（stderr，保持 stdout 纯 JSON）----
     @staticmethod
@@ -1423,15 +1432,8 @@ class Orchestrator:
         return re.sub(r'[\\/:*?"<>|\r\n]+', "_", name).strip() or "产品"
 
     def _snapshot_download_dir(self) -> tuple[Path, set[str]]:
-        """返回下载目录和当前 PDF 文件集合。"""
-        base = Path(self.cfg.ziniaodl)
-        store = self.state.store_name.strip() if self.state.store_name else ""
-        if store:
-            dl_dir = base.parent / store
-            if not dl_dir.exists():
-                dl_dir = base
-        else:
-            dl_dir = base
+        """返回下载目录和当前 PDF 文件集合。目录来自 _open_store() 的 downloadFolderPath。"""
+        dl_dir = self._dl_dir or Path(self.cfg.ziniaodl)  # 兜底：未开店时退回配置目录
         if dl_dir.exists():
             return dl_dir, {p.name for p in dl_dir.glob("*.pdf")}
         return dl_dir, set()
@@ -1506,6 +1508,25 @@ class Orchestrator:
             self._log(f"  文件已重命名（未上传）: {renamed.name}")
             return False
 
+    def _open_store(self) -> Path:
+        """根据店铺名称启动紫鸟店铺，返回下载目录路径（store open 只调用一次，后续 CDP 接管）。"""
+        store_info = STORE_MAP.get(self.state.store_name)
+        if not store_info:
+            store_info = STORE_MAP["3店"]  # 兜底
+        try:
+            result = subprocess.run(
+                ["ziniao-cli", "store", "open", "--name", store_info["name"], "--headless"],
+                capture_output=True, text=True, timeout=60,
+            )
+            data = json.loads(result.stdout)
+            dl_path = data["data"]["downloadFolderPath"]
+        except Exception as exc:
+            raise StepError(1, "cli_error",
+                            f"ziniao-cli store open 失败（店铺 {store_info['name']}）: {exc}") from exc
+        self._log(f"  店铺: {store_info['name']} (storeId={store_info['store_id']})")
+        self._log(f"  下载目录: {dl_path}")
+        return Path(dl_path)
+
     # ==================================================
     # 主流程
     # ==================================================
@@ -1552,8 +1573,9 @@ class Orchestrator:
             self.feishu.update_field(self.state.record_id, "状态", "运行中")
             self.feishu.update_step(self.state.record_id, "步骤1：打开店铺")
 
-        # 连接浏览器（相当于旧版 store open；step 模式也可用）
+        # 根据店铺名称启动紫鸟店铺（仅一次），获取下载目录；随后 CDP 接管浏览器
         try:
+            self._dl_dir = self._open_store()
             await self.browser.connect()
         except StepError as exc:
             return self._result("failed", failed_step=step_filter or 1, error=exc.to_dict(),
