@@ -1137,7 +1137,7 @@ class Orchestrator:
             self._mark_done(1)
             return {"shipment_status": status}
         # 无货件号：仅导航到 inbounds 页确认 CDP 可用，不做全表扫描
-        await self.browser.navigate(INBOUNDS_URL, step=1, wait_after=2.0)
+        await self.browser.navigate(INBOUNDS_URL, step=1, wait_after=0.5)
         self._mark_done(1)
         return {}
 
@@ -1155,7 +1155,7 @@ class Orchestrator:
         self._log("步骤3 选择产品与数量")
         # 3a. 直接用 URL query 搜索 SKU
         search_url = f"https://www.mercadolibre.com.mx/publicaciones/listado/shipment_planning/plans?search={self.state.sku}"
-        await self.browser.navigate(search_url, step=3, wait_after=3.0)
+        await self.browser.navigate(search_url, step=3, wait_after=1.0)
         self._log(f"  SKU {self.state.sku} 已搜索")
         # 3b. 检测搜索结果：仅看是否出现 "0 resultados"
         await asyncio.sleep(2)
@@ -1221,7 +1221,6 @@ class Orchestrator:
         self._log("步骤4 货件预约时间")
         # 4a. 进入预约页（优先用货件号拼 URL，其次从 URL 提取 inbound ID）
         await self.browser.visit_plan_page("appointment-v2", self.state.shipment_id, step=4)
-        await asyncio.sleep(3)
         # 等待预约页加载（轮询运输方式下拉框）
         dd_chain = self.sel.chain(4, "shipment_dropdown")
         await self._wait_any_selector(4, "appointment_page", dd_chain)
@@ -1233,7 +1232,7 @@ class Orchestrator:
                             recovery_attempted=["alt_selector:vehicle_option"])
         self._log("  配送方式: Vehículo particular")
         # 等页面 React 渲染完成
-        await asyncio.sleep(2)
+        await asyncio.sleep(1)
         # 检测是否出现地址选择（大货件需要选仓库地址）
         try:
             await self.browser.page.wait_for_selector('.andes-list__item-action', timeout=5000)
@@ -1248,14 +1247,10 @@ class Orchestrator:
                             await btn.click()
                             self._log("  已选地址: MXCD05")
                             await asyncio.sleep(1)
-                            # 点地址卡片内的 Continuar（不是全局第一个）
-                            cont_btn = self.browser.page.locator(
+                            await self.browser.page.locator(
                                 '.multi-node-card button, .andes-card__footer button'
-                            ).filter(has_text="Continuar").first
-                            if await cont_btn.count() > 0:
-                                await cont_btn.click(force=True)
-                                self._log("  已点 Continuar")
-                                await asyncio.sleep(2)
+                            ).filter(has_text="Continuar").first.click(force=True)
+                            self._log("  已点 Continuar")
                             break
         except Exception:
             pass
