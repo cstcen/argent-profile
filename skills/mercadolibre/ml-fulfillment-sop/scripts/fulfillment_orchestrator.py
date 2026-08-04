@@ -45,7 +45,7 @@ import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 FULFILLMENT_JS = SCRIPT_DIR / "fulfillment.js"
@@ -1303,12 +1303,12 @@ class Orchestrator:
                             recovery_attempted=["role_dialog"])
         # 6-4. Confirmar 完成标签步骤
         await self.browser.click_with_fallback(6, "confirm_btn", "Confirmar", wait_after=3.0)
-        # 上传产品标签（自动重命名 + 飞书 Base 附件）
+        # 上传产品标签（下载前快照，确保捕获任何文件名）
         store_tag = self._safe_name(self.state.store_name or self.cfg.store_name)
-        self._upload_latest_pdf(
-            "Etiquetas-de-producto-*.pdf",
-            f"产品标+{self.state.sku}+{self.state.ml_code}+{self._safe_name(self.state.name)}+{store_tag}.pdf",
+        await self._download_and_upload(
             "产品标签",
+            f"产品标+{self.state.sku}+{self.state.ml_code}+{self._safe_name(self.state.name)}+{store_tag}.pdf",
+            pattern="Etiquetas-de-producto-*.pdf",
             exclude=r"Etiquetas-de-bultos|Envio-")
         self._mark_done(6)
         if self.state.record_id:
@@ -1351,12 +1351,12 @@ class Orchestrator:
         # 7g. 等加载旋转层消失再点 Continuar（箱唛生成后约5秒loading）
         await asyncio.sleep(5)
         await self.browser.click_with_fallback(7, "continuar_btn", "Continuar", wait_after=3.0)
-        # 上传箱唛（自动重命名 + 飞书 Base 附件）
+        # 上传箱唛（下载前快照，确保捕获任何文件名）
         store_tag = self._safe_name(self.state.store_name or self.cfg.store_name)
-        self._upload_latest_pdf(
-            "Envio-*-Etiquetas-de-bultos.pdf",
+        await self._download_and_upload(
+            "箱唛",
             f"{self.state.shipment_id}+{self.state.box}箱+{store_tag}.pdf",
-            "箱唛")
+            pattern="Envio-*-Etiquetas-de-bultos.pdf")
         self._mark_done(7)
         if self.state.record_id:
             self.feishu.send_message("✅ 步骤7完成: 箱唛已上传")
@@ -1386,52 +1386,87 @@ class Orchestrator:
     def _safe_name(name: str) -> str:
         return re.sub(r'[\\/:*?"<>|\r\n]+', "_", name).strip() or "产品"
 
-    def _upload_latest_pdf(self, pattern: str, rename_to: str, field_name: str,
-                           exclude: str = "") -> None:
-        """从下载目录找最新匹配的 PDF，重命名后上传到飞书 Base 附件字段。
-        
-        紫鸟下载目录按店铺分文件夹：ziniaobrowserdatas/{店铺名}/
-        使用 Base 记录的店铺名称定位正确目录。
-        """
-        # 基础路径（去掉旧配置中硬编码的店铺子目录）
+    def _snapshot_download_dir(self) -> tuple[Path, set[str]]:
+        """返回下载目录和当前 PDF 文件集合。"""
         base = Path(self.cfg.ziniaodl)
         store = self.state.store_name.strip() if self.state.store_name else ""
         if store:
             dl_dir = base.parent / store
             if not dl_dir.exists():
-                dl_dir = base  # 店铺目录不存在，用配置默认
+                dl_dir = base
         else:
             dl_dir = base
+        if dl_dir.exists():
+            return dl_dir, {p.name for p in dl_dir.glob("*.pdf")}
+        return dl_dir, set()
+
+    def _find_new_pdf(self, dl_dir: Path, before: set[str], exclude: str = "") -> Optional[Path]:
+        """比较下载目录，返回最新增的 PDF（排除箱唛和已处理文件）。"""
         if not dl_dir.exists():
-            self._log(f"  ⚠️ 下载目录不存在: {dl_dir}")
-            return
-        candidates = sorted(dl_dir.glob(pattern), key=lambda p: p.stat().st_mtime, reverse=True)
-        if not candidates:
-            # 兜底：pattern 可能不对（ML 文件名未知），找最新非排除项的 PDF
-            all_pdfs = sorted(dl_dir.glob("*.pdf"), key=lambda p: p.stat().st_mtime, reverse=True)
-            for pdf in all_pdfs:
-                if exclude and re.search(exclude, pdf.name):
-                    continue  # 跳过箱唛/已重命名文件
-                if "产品标" in pdf.name or "箱" in pdf.name:
-                    continue  # 跳过已处理文件
-                candidates = [pdf]
-                break
-        if not candidates:
-            self._log(f"  ⚠️ 未找到 {pattern}，跳过上传")
-            return
-        src = candidates[0]
+            return None
+        after = {p.name: p for p in dl_dir.glob("*.pdf")}
+        new_names = set(after.keys()) - before
+        if not new_names:
+            return None
+        for name in sorted(new_names):
+            pdf = after[name]
+            if exclude and re.search(exclude, name):
+                continue
+            if "产品标" in name or "箱" in name or "Envio-" in name or "Etiquetas-de-bultos" in name:
+                continue
+            return pdf
+        return None
+
+    async def _download_and_upload(self, field_name: str, rename_to: str,
+                             pattern: str = "*.pdf",
+                             exclude: str = "",
+                             download_trigger: Optional[Callable[[], Any]] = None) -> bool:
+        """通用下载+上传：下载前快照→触发下载→等待→找新PDF→重命名→上传。
+        
+        返回 True 表示成功上传。download_trigger 为 None 时使用 pattern 匹配兜底。
+        """
+        dl_dir, before = self._snapshot_download_dir()
+        if download_trigger:
+            download_trigger()
+            await asyncio.sleep(5)  # 等待下载完成
+        
+        # 优先找新增文件
+        new_pdf = self._find_new_pdf(dl_dir, before, exclude)
+        if new_pdf:
+            src = new_pdf
+        else:
+            # 兜底：pattern 匹配
+            candidates = sorted(dl_dir.glob(pattern), key=lambda p: p.stat().st_mtime, reverse=True)
+            if not candidates:
+                # 终极兜底：找最新非排除PDF
+                all_pdfs = sorted(dl_dir.glob("*.pdf"), key=lambda p: p.stat().st_mtime, reverse=True)
+                for pdf in all_pdfs:
+                    if exclude and re.search(exclude, pdf.name):
+                        continue
+                    if "产品标" in pdf.name or "箱" in pdf.name or "Envio-" in pdf.name:
+                        continue
+                    candidates = [pdf]
+                    break
+            if not candidates:
+                self._log(f"  ⚠️ 未找到 {field_name} PDF，跳过上传")
+                return False
+            src = candidates[0]
+        
         renamed = dl_dir / rename_to
         try:
             src.replace(renamed)
         except OSError as exc:
             self._log(f"  ⚠️ 重命名失败: {exc}")
             renamed = src
+        
         if self.state.record_id and self.cfg.feishu_ready:
             self.feishu.upload_attachment(self.state.record_id, field_name, str(renamed))
             self._log(f"  📎 已上传 {field_name}: {renamed.name}")
             self.state.files_uploaded[field_name] = renamed.name
+            return True
         else:
             self._log(f"  文件已重命名（未上传）: {renamed.name}")
+            return False
 
     # ==================================================
     # 主流程
