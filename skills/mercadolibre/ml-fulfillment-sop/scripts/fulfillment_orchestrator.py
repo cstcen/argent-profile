@@ -352,20 +352,31 @@ class PlaywrightClient:
                 })
             except Exception:
                 pass
-        # 定位 ML 页面：先创建新页面确保使用正确店铺 session，再关旧页面
-        if not self._browser.contexts:
-            raise StepError(step, "cli_error", "CDP 浏览器无可用 context")
-        self._context = self._browser.contexts[0]
-        # 先创建新页面（确保 session 来自当前活跃店铺），再关闭旧 ML 页面
-        self._page = await self._context.new_page()
-        for p in list(self._context.pages):
-            if p is self._page:
-                continue
-            if "mercadolibre" in (p.url or ""):
-                try:
-                    await p.close()
-                except Exception:
-                    pass
+        # 定位 ML 页面（跨所有 context）：优先 mercadolibre.com.mx
+        target = None
+        for ctx in self._browser.contexts:
+            for p in ctx.pages:
+                if "mercadolibre.com.mx" in (p.url or ""):
+                    target, self._context = p, ctx
+                    break
+            if target:
+                break
+        if not target:
+            for ctx in self._browser.contexts:
+                for p in ctx.pages:
+                    if "mercadolibre.com" in (p.url or ""):
+                        target, self._context = p, ctx
+                        break
+                if target:
+                    break
+        if not target and self._browser.contexts:
+            self._context = self._browser.contexts[0]
+            if self._context.pages:
+                target = self._context.pages[0]
+        if not target:
+            raise StepError(step, "cli_error",
+                            "CDP 浏览器中未找到 ML 页面（请先手动登录美客多）")
+        self._page = target
         print(f"[{time.strftime('%H:%M:%S')}] ✅ CDP 已连接 {self.cdp_url}，新建页面",
               file=sys.stderr, flush=True)
 
@@ -1504,10 +1515,20 @@ class Orchestrator:
             return False
 
     def _open_store(self) -> Path:
-        """根据店铺名称启动紫鸟店铺，返回下载目录路径（store open 只调用一次，后续 CDP 接管）。"""
+        """关闭当前店铺，再打开目标店铺（根据 Base 记录的店铺名称）。"""
         store_info = STORE_MAP.get(self.state.store_name)
         if not store_info:
             store_info = STORE_MAP["3店"]  # 兜底
+        # 关闭所有已开店铺
+        for name in ["1店-子账号", "2店-子账号", "3店-主账号"]:
+            try:
+                subprocess.run(
+                    ["ziniao-cli", "store", "close", "--name", name],
+                    capture_output=True, text=True, timeout=15,
+                )
+            except Exception:
+                pass
+        # 打开目标店铺
         try:
             result = subprocess.run(
                 ["ziniao-cli", "store", "open", "--name", store_info["name"], "--headless"],
