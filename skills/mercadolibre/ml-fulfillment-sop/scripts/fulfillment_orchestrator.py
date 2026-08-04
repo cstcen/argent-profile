@@ -1248,7 +1248,14 @@ class Orchestrator:
                             await btn.click()
                             self._log("  已选地址: MXCD05")
                             await asyncio.sleep(1)
-                            await self.browser.click_with_fallback(4, "continuar_btn", "Continuar", wait_after=2.0)
+                            # 点地址卡片内的 Continuar（不是全局第一个）
+                            cont_btn = self.browser.page.locator(
+                                '.multi-node-card button, .andes-card__footer button'
+                            ).filter(has_text="Continuar").first
+                            if await cont_btn.count() > 0:
+                                await cont_btn.click(force=True)
+                                self._log("  已点 Continuar")
+                                await asyncio.sleep(2)
                             break
         except Exception:
             pass
