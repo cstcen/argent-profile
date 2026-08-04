@@ -1618,6 +1618,16 @@ class Orchestrator:
         # 根据店铺名称启动紫鸟店铺（仅一次），获取下载目录；随后 CDP 接管浏览器
         try:
             self._dl_dir = self._open_store()
+            # 等待 CDP 端口就绪（关店再开店时浏览器会重启，端口可能变化）
+            for attempt in range(30):
+                port = _discover_cdp_port()
+                if port:
+                    self.browser.cdp_url = f"http://127.0.0.1:{port}"
+                    break
+                time.sleep(1)
+            else:
+                self.browser.cdp_url = DEFAULT_CDP_URL
+            self._log(f"  CDP 端口: {self.browser.cdp_url}")
             await self.browser.connect(download_dir=str(self._dl_dir))
         except StepError as exc:
             return self._result("failed", failed_step=step_filter or 1, error=exc.to_dict(),
