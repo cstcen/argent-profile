@@ -1201,6 +1201,8 @@ class Orchestrator:
         # 等待按钮变为 enabled（填数量后约 3 秒）
         self._log("  等待 Continuar 按钮启用...")
         await asyncio.sleep(3.0)
+        # 关闭可能的教程蒙层（点击右上角 X 按钮）
+        await self._dismiss_overlay()
         # 3c. Continuar
         await self.browser.click_with_fallback(3, "continuar_btn", "Continuar", wait_after=2.0)
         # 3d. 弹窗 Continuar con mi plan actual（fallback 链逐个等待）
@@ -1348,6 +1350,23 @@ class Orchestrator:
             return txt
         raise StepError(4, "selector_not_found", "日期选择失败：翻月后仍无法选中",
                         recovery_attempted=["gray_circle_flip_2"])
+
+    async def _dismiss_overlay(self) -> None:
+        """关闭页面教程/广告蒙层（点击右上角关闭按钮）。"""
+        try:
+            # 尝试多种常见的关闭按钮
+            for sel in [
+                'button[class*="close"]', '[class*="close"][class*="button"]',
+                '[aria-label*="Cerrar"]', '[aria-label*="cerrar"]',
+                '[data-testid*="close"]', 'button:has([class*=close])',
+            ]:
+                btn = self.browser.page.locator(sel).first
+                if await btn.count() > 0 and await btn.is_visible():
+                    await btn.click()
+                    await asyncio.sleep(0.5)
+                    return
+        except Exception:
+            pass
 
     async def _flip_month(self) -> None:
         """点击日历下月按钮（fallback 链）。"""
