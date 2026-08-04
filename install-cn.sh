@@ -69,7 +69,13 @@ else
 fi
 log_ok "Argent Profile 已安装"
 
-# ── 5. 创建 argent 命令 ──
+# ── 5. 安装 argent-cli（setup/login/role 命令）───
+log_info "安装 Argent CLI..."
+ARGENT_CLI_URL="https://whyshu.com/dl/argent.tar.gz"
+python3 -m pip install $PIP_MIRROR --no-build-isolation -q "$ARGENT_CLI_URL" 2>&1 | tail -1
+log_ok "Argent CLI 已安装"
+
+# ── 6. 创建 argent 命令 ──
 mkdir -p "$ARGENT_HOME/bin"
 cat > "$ARGENT_HOME/bin/argent" << 'ARGENTEOF'
 #!/usr/bin/env bash
@@ -109,7 +115,7 @@ if [[ ":$PATH:" != *":$ARGENT_HOME/bin:"* ]]; then
 fi
 log_ok "argent 命令已创建"
 
-# ── 6. 基础配置 ──
+# ── 7. 基础配置 ──
 mkdir -p "$HERMES_HOME"
 if [ ! -f "$HERMES_HOME/config.yaml" ]; then
     cat > "$HERMES_HOME/config.yaml" << 'YAML'
