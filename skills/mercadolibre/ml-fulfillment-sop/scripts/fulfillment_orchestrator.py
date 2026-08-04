@@ -54,6 +54,23 @@ ML_BASE_URL = "https://myaccount.mercadolibre.com.mx"
 INBOUNDS_URL = f"{ML_BASE_URL}/shipping/inbounds"
 DEFAULT_CDP_URL = "http://127.0.0.1:52420"
 
+
+def _discover_cdp_port() -> Optional[int]:
+    """从 ziniaobro 进程自动发现 CDP 调试端口（每次重启紫鸟端口随机变化）。"""
+    try:
+        out = subprocess.run(
+            ["lsof", "-i", "-P", "-n"],
+            capture_output=True, text=True, timeout=10,
+        )
+        for line in out.stdout.splitlines():
+            if "ziniaobro" in line and "LISTEN" in line:
+                m = re.search(r":(\d+)\s", line)
+                if m:
+                    return int(m[1])
+    except Exception:
+        pass
+    return None
+
 # 写步骤（会修改卖家后台数据）——默认 allow_write=False，Agent 确认后才执行
 WRITE_STEPS: tuple[int, ...] = (3, 4, 5, 7, 8)
 READ_STEPS: tuple[int, ...] = (1, 2, 6)
@@ -130,7 +147,7 @@ def load_config(env_file: Optional[Path] = None) -> Config:
         store_name=pick("ML_STORE_NAME"),
         feishu_user=pick("FEISHU_USER_ID"),
         ziniaodl=pick("ZINIAO_DL") or str(Path.home() / "Library/Application Support/ziniaobrowserdatas/ziniao browser"),
-        cdp_url=pick("ML_CDP_URL") or DEFAULT_CDP_URL,
+        cdp_url=pick("ML_CDP_URL") or (lambda p: f"http://127.0.0.1:{p}" if p else DEFAULT_CDP_URL)(_discover_cdp_port()),
     )
 
 
