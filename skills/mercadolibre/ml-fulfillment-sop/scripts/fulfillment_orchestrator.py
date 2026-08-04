@@ -1099,19 +1099,17 @@ class Orchestrator:
     # ==================================================
     async def step1_prepare(self) -> dict[str, Any]:
         self._log("步骤1 前期准备：检查 FULL 管理页")
-        # 有货件号：直接用 URL query 查，不扫全表
         if self.state.shipment_id:
+            # 有货件号：直接 URL query 查目标货件状态
             await self.browser.navigate(
                 f"{INBOUNDS_URL}?query={self.state.shipment_id}", step=1, wait_after=2.0)
-            # 仍然提取列表（可能只有1条目标货件）
             out = await self.browser.evaluate(JS_EXTRACT_SHIPMENTS, step=1)
             try:
                 data = json.loads(out)
             except json.JSONDecodeError:
                 data = {"shipments": [], "capacity_warning": None}
-            shipments = data.get("shipments", [])
-            # 检查目标货件状态
-            for s in shipments:
+            status = ""
+            for s in data.get("shipments", []):
                 if s["id"] == self.state.shipment_id:
                     status = s.get("status", "")
                     if status in ("Reserva cancelada", "Procesamiento finalizado", "Cancelado"):
@@ -1123,29 +1121,11 @@ class Orchestrator:
                         return {"status": "already_completed", "shipment_status": status}
                     break
             self._mark_done(1)
-            return {"shipment_count": len(shipments), "expired": [],
-                    "en_preparacion": 0, "capacity_warning": False}
-        # 无货件号：全表扫描
+            return {"shipment_status": status}
+        # 无货件号：仅导航到 inbounds 页确认 CDP 可用，不做全表扫描
         await self.browser.navigate(INBOUNDS_URL, step=1, wait_after=2.0)
-        out = await self.browser.evaluate(JS_EXTRACT_SHIPMENTS, step=1)
-        try:
-            data = json.loads(out)
-        except json.JSONDecodeError:
-            data = {"shipments": [], "capacity_warning": None}
-        shipments = data.get("shipments", [])
-        expired = [s for s in shipments if s.get("status") == "Vencido"]
-        in_prep = [s for s in shipments if s.get("status") == "En preparación"]
-        warning = data.get("capacity_warning")
-        summary = {
-            "shipment_count": len(shipments),
-            "expired": [s["id"] for s in expired],
-            "en_preparacion": len(in_prep),
-            "capacity_warning": bool(warning),
-        }
-        self._log(f"  货件数={len(shipments)} 过期={len(expired)} "
-                  f"En preparación={len(in_prep)} 库容警告={bool(warning)}")
         self._mark_done(1)
-        return summary
+        return {}
 
     # ==================================================
     # 步骤 2：点击 Enviar productos 进入创建入口（只读导航）
