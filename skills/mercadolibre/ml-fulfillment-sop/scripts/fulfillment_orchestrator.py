@@ -1133,18 +1133,22 @@ class Orchestrator:
                             recovery_attempted=["poll_10x"])
         await self.browser.click_with_fallback(3, "plan_modal_btn",
                                                "Continuar con mi plan actual", wait_after=3.0)
-        # 3e. 货件号（页面DOM标题提取） + inbound ID（URL提取，用于预约页导航）
+        # 等待 ML redirect：loading spinner ~5s → /inbounds/{id}/hub-v2
+        self._log("  等待创建完成并跳转到 hub...")
+        try:
+            await self.browser.page.wait_for_url("**/hub-v2**", timeout=30000)
+        except Exception:
+            pass
+        await asyncio.sleep(2)
+        # 3e. 货件号（hub-v2 URL 中 /inbounds/{id}/ 即货件号） + inbound ID
         shipment = await self.browser.evaluate(JS_EXTRACT_SHIPMENT_ID, step=3)
         if shipment == "UNKNOWN" or not shipment:
             raise StepError(3, "business", "未从页面提取到货件号", recovery_attempted=["dom_regex"])
         self.state.shipment_id = shipment
-        # 同时提取 inbound ID（预约页需要 inbound ID 非货件号）
+        # inbound ID = shipment - 1（ML 编号规律）
         try:
-            inbound = await self.browser.evaluate(
-                "(function(){var m=location.href.match(/\/inbounds\/(\d+)/);return m?m[1]:'';})();", step=3)
-            if inbound and inbound != "null":
-                self.state.inbound_id = inbound
-        except StepError:
+            self.state.inbound_id = str(int(shipment) - 1)
+        except ValueError:
             pass
         self._log(f"  货件号: {shipment}" + (f" inbound={self.state.inbound_id}" if self.state.inbound_id else ""))
         self.feishu.update_field(self.state.record_id, "货件号", shipment)
