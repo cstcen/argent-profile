@@ -7,10 +7,13 @@ license: MIT
 
 # CRITICAL: SOUL.md NOT in distribution_owned
 # → argent role switches are preserved across hermes profile update
+# config.yaml NOT in distribution_owned (argent role 会改写 bundles/tools)
 distribution_owned:
   - skills/
   - cron/
   - mcp.json
+  - roles.yaml
+  - souls/
 
 env_requires:
   - name: WHYSHU_API_KEY
