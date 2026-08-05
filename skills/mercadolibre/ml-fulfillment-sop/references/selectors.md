@@ -7,6 +7,20 @@
 - 每次 UI 变更后更新「最后验证日期」
 - 关键页面：`https://myaccount.mercadolibre.com.mx/shipping/inbounds`
 
+## 当前有效选择器（Playwright CDP，2026-08-05）
+
+| 元素 | 选择器 / 提取方式 | 说明 |
+|------|------------------|------|
+| 数量输入框 | `input[id^="_r_"], input[id^="_R_"]` | ⚠️ 不是 `type="number"`，用 ID 前缀匹配 |
+| Checkbox | 限定到 `main` 容器 | 排除 `#nav-header-user-switch`，防导航栏误触 |
+| 产品标 PDF | 文件名模式 `Envio-*-Etiquetas-de-productos.pdf` | `Envio-` 前缀容易漏 |
+| 货件号 | 从 DOM 标题元素提取 | 不是 URL inbound 编号 |
+| ML 码 | `match(/[A-Z]{4}[0-9]+/)` 搜子串 | 用正则扫文本 |
+| 预约确认按钮 | 双 Confirmar | 日历确认 top<700 + 主确认 top≈800 |
+| 教程蒙层 | `aria-label=Close` + `andes-coach-marks` | 关闭新手引导浮层 |
+| Enviar productos | `<a>` 标签 + force=True | 链接型按钮需强制点击 |
+| 大货件地址 MXCD05 | card footer Continuar force=True | 特殊地址流程的确认按钮 |
+
 ## 已验证信息（2026-07-27）
 
 | 项目 | 值 |

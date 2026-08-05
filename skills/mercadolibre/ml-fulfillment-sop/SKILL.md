@@ -1,10 +1,31 @@
 ---
 id: ml-fulfillment-sop
 name: 美客多 FULL 货件管理
-version: 2.0.0
+version: 2.4.1
 category: 产品运营
 tags: [FULL, 货件, 发货, 库存, 预约, 箱唛, 标签]
 difficulty: ⭐⭐⭐
+changelog:
+  - version: 2.4.1
+    date: 2026-08-05
+    changes:
+      - 选择器大小写修复：React 动态 ID _r_/_R_ 双写覆盖，数量输入框改用 ID 前缀匹配（非 type=number）
+      - 导航栏误触修复：checkbox 限定 main 容器，排除 #nav-header-user-switch
+      - 货件号改为从 DOM 标题提取（弃用 URL inbound 编号）
+  - version: 2.4.0
+    date: 2026-08-04
+    changes:
+      - FULL 货件编排器支持多店铺并行：STORE_MAP 店铺映射，每店独立 CDP 端口
+      - 下载目录改为 ziniaobrowserdatas/{店铺名}/ 按店区分
+  - version: 2.3.0
+    date: 2026-08-03
+    changes:
+      - 浏览器控制层重写为 Playwright CDP 方案（替代 ziniao-cli subprocess）
+      - 总结 Andes React 交互规则：PointerEvent 全序列 / robustClick / 日历灰圈定位
+  - version: 2.0.0
+    date: 2026-08-03
+    changes:
+      - 当前基线：8 步 SOP 完整流程（v0.4.0 Profile Distribution 快照）
 requires:
   - ziniao-cli >= 1.0.0
   - mercadolibre-store-auth
@@ -24,6 +45,15 @@ push:
 # 美客多 FULL 货件管理
 
 基于标准化 SOP（美客多货件创建标准化SOP.xlsx）的 8 步操作流程。
+
+## 前置知识
+
+执行前先阅读 `references/` 下的经验沉淀，避免已知陷阱：
+
+- `references/selectors.md` — 当前有效 DOM 选择器集合与数据提取模式（含 2026-08-05 Playwright CDP 验证版）
+- `references/andes-components.md` — Andes React 组件交互规则：PointerEvent 全序列、robustClick、日历定位
+- `references/pitfalls.md` — 已知陷阱与修复清单：导航栏误触、ID 大小写、PDF 前缀、下载目录等
+- `references/cdp-port-mapping.md` — 多店铺 CDP 端口策略：动态发现、缓存、store 操作规范
 
 ## 操作警告与触发生效条件
 
