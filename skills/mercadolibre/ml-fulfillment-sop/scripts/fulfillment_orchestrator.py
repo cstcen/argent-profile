@@ -1413,16 +1413,27 @@ class Orchestrator:
                 self.feishu.update_step(self.state.record_id, f"失败：{msg}")
                 self.feishu.send_message(self._friendly_failure_message())
             raise exc
-        # 3c. 等 quantity input（ANDES 输入框，无 placeholder = 数量输入）
+        # 3c. 等搜索结果页内容渲染完成（数量输入框出现，最长 25s——ML 搜索页异步渲染约 10-12s）
         try:
             await self.browser.page.wait_for_selector(
-                'input[class*="andes-form-control"]:not([placeholder])', timeout=5000)
+                'input[class*="andes-form-control"]:not([placeholder])', timeout=25000)
         except Exception:
             pass  # 输入框已存在或选择器不匹配，fill_with_fallback 会兜底
+        # 关掉可能存在的广告弹窗/教程蒙层（循环 2 次：广告关闭后可能再出现 coachmarks）
+        for _ in range(2):
+            await self._dismiss_overlay()
+            await asyncio.sleep(0.8)
         await self.browser.fill_with_fallback(3, "qty_input", self.state.qty, wait_after=1.0)
         self._log("  等待 Continuar 按钮启用...")
-        await asyncio.sleep(3.0)
-        await self._dismiss_overlay()
+        # 3d. 等 Continuar 按钮出现再点击（最长 25s），不再依赖 sleep(3) 盲等
+        #     ⚠️ 不能用裸 'button'——导航栏按钮会立即匹配，等待形同虚设；必须等
+        #     textContent=Continuar 的按钮进入 DOM（ML 搜索页异步渲染 ~10-12s）
+        try:
+            await self.browser.page.wait_for_selector(
+                'button:has-text("Continuar")', timeout=25000, state="attached")
+        except Exception:
+            pass
+        await self._dismiss_overlay()  # 点击前再清一次蒙层
         # 3d. Continuar → 弹窗 → 跳转 hub → 货件号
         await self.browser.click_with_fallback(3, "continuar_btn", "Continuar", wait_after=2.0)
         modal_chain = self.sel.chain(3, "plan_modal_btn")
@@ -1710,9 +1721,9 @@ class Orchestrator:
                         recovery_attempted=["day_selected_retry"])
 
     async def _dismiss_overlay(self) -> None:
-        """关闭页面教程/广告蒙层（ML Andes coachmarks 组件）。"""
+        """关闭页面教程/广告蒙层（coachmarks + ML 广告/推广弹窗）。"""
         try:
-            # ML 教程蒙层：aria-label="Close" + class=andes-coach-marks
+            # 1) ML 教程蒙层（coachmarks）：aria-label="Close" + class=andes-coach-marks
             close_btn = self.browser.page.locator(
                 '[aria-label="Close"], .andes-coach-marks__step__close-button, '
                 '#coachmarks-fast-shipping-hero-step-close-button'
@@ -1721,6 +1732,20 @@ class Orchestrator:
                 await close_btn.click(force=True)
                 await asyncio.sleep(0.5)
                 self._log("  已关闭教程蒙层")
+        except Exception:
+            pass
+        try:
+            # 2) 广告/推广弹窗（andes-modal / role=dialog 内的关闭按钮）
+            modal_close = self.browser.page.locator(
+                '.andes-modal [aria-label="Close"], .andes-modal [aria-label="Cerrar"], '
+                '[role="dialog"] [aria-label="Close"], [role="dialog"] [aria-label="Cerrar"], '
+                '.andes-modal__close, .andes-modal__header__close, '
+                '[role="dialog"] button[class*="close"]'
+            ).first
+            if await modal_close.count() > 0 and await modal_close.is_visible():
+                await modal_close.click(force=True)
+                await asyncio.sleep(0.5)
+                self._log("  已关闭广告/推广弹窗")
         except Exception:
             pass
 
