@@ -434,16 +434,9 @@ class PlaywrightClient:
     async def navigate(self, url: str, step: int = 0, wait_after: float = 0.0,
                        timeout: int = 60) -> None:
         try:
-            await self.page.goto(url, wait_until="networkidle", timeout=timeout * 1000)
-        except Exception as exc:
-            # ML 长连接/轮询常导致 networkidle 超时；页面已加载则按 domcontentloaded 继续
-            print(f"[{time.strftime('%H:%M:%S')}] ⚠️ networkidle 超时({url[:60]}): "
-                  f"{type(exc).__name__}，改用 domcontentloaded",
-                  file=sys.stderr, flush=True)
-            try:
-                await self.page.goto(url, wait_until="domcontentloaded", timeout=timeout * 1000)
-            except Exception as exc2:
-                raise StepError(step, "timeout", f"页面导航失败: {url}: {exc2}") from exc2
+            await self.page.goto(url, wait_until="domcontentloaded", timeout=timeout * 1000)
+        except Exception as exc2:
+            raise StepError(step, "timeout", f"页面导航失败: {url}: {exc2}") from exc2
         # 等待页面主体容器渲染完成（避免后续点击误触导航栏）
         try:
             await self.page.wait_for_selector("main, #root-app", timeout=15000)
@@ -1319,9 +1312,12 @@ class Orchestrator:
             self.feishu.send_message(f"✅ 步骤4完成: #{self.state.shipment_id} 已预约")
 
     async def _pick_date(self) -> str:
-        """灰圈算法：找 div.day--current，从其后的第 30 格选日期（跳过表头）。
+        """灰圈算法：找 div.day--current，从其后的第 31 格起选日期（跳过表头与 disabled 格）。
 
-        与 poll-fulfillment.sh 验证过的算法一致；若当前视图不足则翻月重试一次。
+        规则：所选预约日期必须 >= 今天+31 天；若 +31 天那天 disabled，则继续向后延一天。
+        主路径（有 day--current）：target = idx + 31，跳过表头字母格与 day--disabled 格；
+        fallback（无 day--current）：精确计算今天+31 天目标日期，按日历月份文本匹配选中
+        （或其后第一个可用日）；两种路径点击后都验证 day--selected 生效（轮询最多 3s）。
         """
         day_sel = "div.day"
         days = self.browser.page.locator("div.day")
@@ -1337,55 +1333,135 @@ class Orchestrator:
                 }"""
             )
             if idx < 0:
-                # fallback：无 div.day--current（pitfall #123）——选视图内最后一个可用日期
-                fb = await self.browser.page.evaluate(
+                # fallback：无 div.day--current（pitfall #123）——
+                # 精确计算今天+31 天的目标日期并选中（或其后第一个可用日），不再选视图内最后一天
+                res = await self.browser.page.evaluate(
                     """() => {
                         const days = document.querySelectorAll('div.day');
-                        for (let i = days.length - 1; i >= 0; i--) {
-                            const t = (days[i].textContent || '').trim();
-                            if (/^\\d+$/.test(t) && !days[i].classList.contains('day--disabled')) return i;
+                        const n = days.length;
+                        const now = new Date();
+                        const target = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 31);
+                        const MONTHS = ['enero','febrero','marzo','abril','mayo','junio','julio',
+                                       'agosto','septiembre','octubre','noviembre','diciembre'];
+                        // 探测日历月份文本（focus-ui datepicker）
+                        const my = document.querySelector('.focus-ui-datepicker__content__month-year');
+                        const headerText = my ? (my.textContent || '').trim().toLowerCase() : '';
+                        const headerReliable = MONTHS.some(m => headerText.includes(m)) && /\\d{4}/.test(headerText);
+                        if (headerReliable) {
+                            // 解析视图月份序列（可能双月 "agosto - septiembre"）
+                            const viewMonths = MONTHS.map((m, mi) => headerText.includes(m) ? mi : -1)
+                                                        .filter(x => x >= 0);
+                            const ym = headerText.match(/(\\d{4})/);
+                            const viewYear = ym ? parseInt(ym[1], 10) : now.getFullYear();
+                            // 找所有 "1" 的位置作为月份边界
+                            const ones = [];
+                            for (let i = 0; i < n; i++) {
+                                const t = (days[i].textContent || '').trim();
+                                if (/^\\d+$/.test(t) && parseInt(t, 10) === 1) ones.push(i);
+                            }
+                            const tMonth = target.getMonth();
+                            const tIdxInView = viewMonths.indexOf(tMonth);
+                            if (tIdxInView >= 0 && target.getFullYear() === viewYear) {
+                                const start = ones[Math.min(tIdxInView, ones.length - 1)] ?? 0;
+                                const end = tIdxInView + 1 < ones.length ? ones[tIdxInView + 1] : n;
+                                // 目标日当天或其后第一个可用日（同月区间内向后延）
+                                for (let i = start; i < end; i++) {
+                                    const t = (days[i].textContent || '').trim();
+                                    if (/^\\d+$/.test(t) && parseInt(t, 10) >= target.getDate()
+                                            && !days[i].classList.contains('day--disabled')) {
+                                        return {found: true, idx: i, mode: 'header', header: headerText};
+                                    }
+                                }
+                                // 当月视图内没有 >= 目标日的可用日 → 需翻月
+                                return {found: false, needFlip: true, mode: 'header', header: headerText};
+                            }
+                            // 目标月不在当前视图 → 需翻月
+                            return {found: false, needFlip: true, mode: 'header', header: headerText};
                         }
-                        return -1;
+                        // header 不可靠：降级为「目标日数字 + 视图内该数字后的第一个可用格」
+                        for (let i = 0; i < n; i++) {
+                            const t = (days[i].textContent || '').trim();
+                            if (/^\\d+$/.test(t) && parseInt(t, 10) === target.getDate()) {
+                                for (let j = i; j < n; j++) {
+                                    const t2 = (days[j].textContent || '').trim();
+                                    if (/^\\d+$/.test(t2) && !days[j].classList.contains('day--disabled')) {
+                                        return {found: true, idx: j, mode: 'approx', header: headerText};
+                                    }
+                                }
+                                break;
+                            }
+                        }
+                        return {found: false, needFlip: true, mode: 'approx', header: headerText};
                     }"""
                 )
-                if fb < 0:
-                    # 当前视图无可用日：flip==0 翻月重试；flip==1 抛错
+                if not res.get("found"):
+                    # 当前视图找不到目标日：flip==0 翻月重试；flip==1 抛错
                     if flip == 0:
                         await self._flip_month()
                         continue
-                    raise StepError(4, "selector_not_found", "日期选择失败：无 day--current 且无可选日期格",
-                                    recovery_attempted=["gray_circle_fallback"])
-                self._log(f"  ⚠️ 未找到 div.day--current，fallback 选视图内最后可用日 (idx={fb})")
-                txt = (await days.nth(fb).text_content() or "").strip()
-                await days.nth(fb).click(timeout=15000)
+                    raise StepError(4, "selector_not_found",
+                                    f"日期选择失败：fallback 翻月后仍找不到 >= 今天+31 的可用日 "
+                                    f"(header={res.get('header')!r})",
+                                    recovery_attempted=["gray_circle_fallback", "gray_circle_skip_disabled"])
+                self._log(f"  ⚠️ 未找到 div.day--current，fallback 按目标日期 "
+                          f"{await self._target_date_str()} 选中 (idx={res['idx']}, mode={res['mode']}, "
+                          f"header={res.get('header')!r})")
+                txt = (await days.nth(res["idx"]).text_content() or "").strip()
+                await days.nth(res["idx"]).click(timeout=15000)
                 await asyncio.sleep(1.0)
+                await self._verify_day_selected(days, res["idx"])
                 return txt
             n = await days.count()
             target = idx + 31  # 确保至少31天后（表头占7格，+30可能不够）
-            if target >= n:
-                if flip == 0:
-                    await self._flip_month()
-                    continue
-                raise StepError(4, "selector_not_found", "日期选择失败：翻月后仍不足 30 格",
-                                recovery_attempted=["gray_circle_flip_2"])
-            # 跳过表头（纯字母格）
-            txt = (await days.nth(target).text_content() or "").strip()
-            while target < n and re.match(r"^[A-Z]+$", txt):
-                target += 1
-                if target >= n:
-                    break
+            txt = ""
+            # 跳过表头（纯字母格）与 disabled 格（合并进同一循环）
+            while target < n:
+                cls = await days.nth(target).get_attribute("class") or ""
                 txt = (await days.nth(target).text_content() or "").strip()
+                if re.match(r"^[A-Z]+$", txt) or "day--disabled" in cls:
+                    target += 1
+                    continue
+                break
             if target >= n:
                 if flip == 0:
                     await self._flip_month()
                     continue
                 raise StepError(4, "selector_not_found", "日期选择失败：翻月后仍无法选中",
-                                recovery_attempted=["gray_circle_flip_2"])
+                                recovery_attempted=["gray_circle_skip_disabled", "gray_circle_flip_2"])
             await days.nth(target).click(timeout=15000)
             await asyncio.sleep(1.0)
+            await self._verify_day_selected(days, target)
             return txt
         raise StepError(4, "selector_not_found", "日期选择失败：翻月后仍无法选中",
-                        recovery_attempted=["gray_circle_flip_2"])
+                        recovery_attempted=["gray_circle_skip_disabled", "gray_circle_flip_2"])
+
+    async def _target_date_str(self) -> str:
+        """fallback 目标日期（今天+31）字符串，仅用于日志。"""
+        try:
+            return await self.browser.page.evaluate(
+                """() => {
+                    const now = new Date();
+                    const t = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 31);
+                    return t.toISOString().slice(0, 10);
+                }"""
+            )
+        except Exception:
+            return "today+31"
+
+    async def _verify_day_selected(self, days, idx: int) -> None:
+        """点击日期格后验证 day--selected 生效（轮询最多 3s），未生效重试点击一次，仍失败抛错。"""
+        for attempt in range(2):
+            for _ in range(6):  # 6 * 0.5s = 3s
+                cls = await days.nth(idx).get_attribute("class") or ""
+                if "day--selected" in cls:
+                    return
+                await asyncio.sleep(0.5)
+            if attempt == 0:
+                self._log("  ⚠️ day--selected 未生效，重试点击日期格")
+                await days.nth(idx).click(timeout=15000)
+                await asyncio.sleep(1.0)
+        raise StepError(4, "selector_not_found", "日期选择失败：点击后 day--selected 未生效",
+                        recovery_attempted=["day_selected_retry"])
 
     async def _dismiss_overlay(self) -> None:
         """关闭页面教程/广告蒙层（ML Andes coachmarks 组件）。"""
