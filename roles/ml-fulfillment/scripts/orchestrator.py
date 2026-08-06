@@ -1282,7 +1282,7 @@ class Orchestrator:
                             recovery_attempted=["alt_selector:hour"]) from exc
         await asyncio.sleep(1.0)
         self._log(f"  预约时间: {hour_text}")
-        # 4e. 确认（分两次：第1次点日历区 Confirmar，第2次点主确认）
+        # 4e. 确认（分两次：第1次点日历区 Confirmar 注册日期，第2次点主确认提交预约）
         confirm_chain = self.sel.chain(4, "confirm_btn")
         r = await self.browser.click_button("Confirmar", confirm_chain[0],
                                             require_enabled=False, step=4)
@@ -1290,12 +1290,27 @@ class Orchestrator:
             raise StepError(4, "selector_not_found", "未找到第1个 Confirmar（日历区）",
                             recovery_attempted=["retry_3x"])
         await asyncio.sleep(2)
-        r = await self.browser.click_button("Confirmar", confirm_chain[0],
-                                            require_enabled=True, step=4)
-        if r != "clicked":
-            raise StepError(4, "selector_not_found", "主 Confirmar 不可用或未找到",
-                            recovery_attempted=["retry_3x"])
+        # 第2次：点主确认——日历区确认后主确认是页面上（top>700 的）Confirmar，
+        # 不能再用 confirm_chain[0]（那仍是日历区按钮）
+        main_btn = self.browser.page.locator("button", has_text="Confirmar").last
+        try:
+            box = await main_btn.bounding_box()
+            if not box or box["y"] < 700:
+                raise StepError(4, "selector_not_found", "主 Confirmar 不可用或未找到",
+                                recovery_attempted=["retry_3x"])
+            await main_btn.click(timeout=15000)
+        except StepError:
+            raise
+        except Exception as exc:
+            raise StepError(4, "selector_not_found", f"主 Confirmar 点击失败: {exc}",
+                            recovery_attempted=["retry_3x"]) from exc
         await asyncio.sleep(5)
+        # 提交后应跳转 hub-v2；未跳转说明预约未提交
+        try:
+            await self.browser.page.wait_for_url("**/hub-v2**", timeout=15000)
+        except Exception:
+            raise StepError(4, "business", "预约提交后未跳转 hub-v2，预约可能未提交",
+                            recovery_attempted=["check_appointment_state"])
         self._mark_done(4)
         if self.state.record_id:
             self.feishu.send_message(f"✅ 步骤4完成: #{self.state.shipment_id} 已预约")
@@ -1393,6 +1408,12 @@ class Orchestrator:
                             recovery_attempted=["checkbox_mouseevent"])
         await self.browser.click_with_fallback(5, "confirm_btn", "Confirmar")
         await asyncio.sleep(3)
+        # 提交后应跳转 hub-v2；未跳转说明包装确认未提交
+        try:
+            await self.browser.page.wait_for_url("**/hub-v2**", timeout=15000)
+        except Exception:
+            raise StepError(5, "business", "包装确认后未跳转 hub-v2，确认可能未提交",
+                            recovery_attempted=["check_procedures_state"])
         self._mark_done(5)
         if self.state.record_id:
             self.feishu.send_message(f"✅ 步骤5完成: 包装确认 - {self.state.sku}")
