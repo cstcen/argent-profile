@@ -39,13 +39,16 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import base64
 import json
 import os
 import re
 import subprocess
 import sys
 import time
+import urllib.request
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Optional
 
@@ -55,6 +58,99 @@ FULFILLMENT_JS = SCRIPT_DIR / "fulfillment.js"
 ML_BASE_URL = "https://myaccount.mercadolibre.com.mx"
 INBOUNDS_URL = f"{ML_BASE_URL}/shipping/inbounds"
 DEFAULT_CDP_URL = "http://127.0.0.1:52420"
+
+# Telemetry：失败诊断包云上报（opt-in）。端点对应 whyshu-svr /api/argent/telemetry/failure。
+TELEMETRY_PATH = "/api/argent/telemetry/failure"
+TELEMETRY_URL = os.environ.get("WHYSHU_API_URL", "https://whyshu.com") + TELEMETRY_PATH
+VERSION = "2.4.1"  # 与 skills/mercadolibre/ml-fulfillment-sop/SKILL.md frontmatter 同步（运行时优先读 frontmatter）
+LOG_TAIL_MAX_LINES = 200          # log_tail 最多 200 行
+SCREENSHOT_B64_MAX_CHARS = 1024 * 1024  # 截图 base64 超过 1MB 不上传
+
+# 本地失败诊断索引（纯本地，不上报；多店铺并行时单行 append 原子安全）
+FAILURES_DIR = Path.home() / ".hermes" / "fulfillment-logs"
+FAILURES_JSONL = FAILURES_DIR / "failures.jsonl"
+
+
+def _append_failure(record: dict[str, Any]) -> None:
+    """追加一条失败诊断记录到 failures.jsonl（JSONL：每行一个 JSON 对象）。
+
+    单行 append（O_APPEND）多进程并发原子安全；写失败静默，不影响主流程。
+    """
+    try:
+        FAILURES_DIR.mkdir(parents=True, exist_ok=True)
+        with open(FAILURES_JSONL, "a", encoding="utf-8") as f:
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
+
+
+# ────────────────────────────────────────────────
+# Telemetry 配置读取（opt-in / auth_token / version / log_tail / 截图）
+# ────────────────────────────────────────────────
+
+def _read_telemetry_opt_in() -> bool:
+    """读取 telemetry_opt_in（正则解析顶层键，避免 PyYAML 依赖）。
+
+    兼容两处配置：~/.argent/config.yaml（本机 argent 实际配置路径）与
+    ~/.hermes/profiles/argent/config.yaml；任一显式 true/1/yes 即开启，其余关闭。
+    """
+    for p in (Path.home() / ".argent" / "config.yaml",
+              Path.home() / ".hermes" / "profiles" / "argent" / "config.yaml"):
+        try:
+            text = p.read_text(encoding="utf-8")
+        except Exception:
+            continue
+        m = re.search(r"^\s*telemetry_opt_in\s*:\s*(\S+)\s*$", text, re.M | re.I)
+        if m:
+            return m.group(1).strip().lower() in ("true", "1", "yes")
+    return False
+
+
+def _read_auth_token() -> str:
+    """读取问述账号 JWT：与 argent CLI 一致（$ARGENT_HOME/auth_token，缺省 ~/.argent/auth_token）。"""
+    home = os.environ.get("ARGENT_HOME") or str(Path.home() / ".argent")
+    try:
+        return (Path(home) / "auth_token").read_text(encoding="utf-8").strip()
+    except Exception:
+        return ""
+
+
+def _read_skill_version() -> str:
+    """从 ml-fulfillment-sop SKILL.md frontmatter 读 version（沿目录向上探测，双副本通用），失败回退 VERSION。"""
+    root = Path(__file__).resolve().parent
+    while root != root.parent:
+        cand = root / "skills" / "mercadolibre" / "ml-fulfillment-sop" / "SKILL.md"
+        if cand.is_file():
+            try:
+                m = re.search(r"^version\s*:\s*([\w.\-]+)", cand.read_text(encoding="utf-8"), re.M)
+                if m:
+                    return m.group(1)
+            except Exception:
+                pass
+        root = root.parent
+    return VERSION
+
+
+def _read_log_tail(log_file: str) -> str:
+    """日志尾部最多 LOG_TAIL_MAX_LINES 行（本次运行日志；cron 经 FULFILLMENT_LOG_FILE 注入）。"""
+    if not log_file:
+        return ""
+    try:
+        lines = Path(log_file).read_text(encoding="utf-8", errors="replace").splitlines()
+        return "\n".join(lines[-LOG_TAIL_MAX_LINES:])
+    except Exception:
+        return ""
+
+
+def _screenshot_base64(path: Optional[str]) -> str:
+    """失败截图 base64（编码后 >1MB 不上传；读取失败返回空串）。"""
+    if not path:
+        return ""
+    try:
+        b64 = base64.b64encode(Path(path).read_bytes()).decode("ascii")
+        return b64 if len(b64) <= SCREENSHOT_B64_MAX_CHARS else ""
+    except Exception:
+        return ""
 
 
 def _discover_cdp_ports() -> list[int]:
@@ -1085,16 +1181,144 @@ class Orchestrator:
             self.state.completed_steps.append(step)
         self._log(f"  ✅ 步骤{step} ({STEP_NAMES[step]}) 完成")
 
-    async def _screenshot_on_error(self, step: int) -> None:
-        """步骤失败时自动截图现场到 /tmp/fulfillment-screenshots/。"""
+    async def _screenshot_on_error(self, step: int) -> Optional[str]:
+        """步骤失败时自动截图现场到 /tmp/fulfillment-screenshots/。
+
+        文件名带 SKU（step{step}-{sku}-{YYYYMMDD-HHMMSS}.png）便于与失败记录关联；
+        SKU 为空时保持原格式。返回截图绝对路径（失败返回 None）。
+        """
         try:
             d = Path("/tmp/fulfillment-screenshots")
             d.mkdir(parents=True, exist_ok=True)
-            p = d / f"step{step}-{time.strftime('%Y%m%d-%H%M%S')}.png"
+            sku = (self.state.sku or "").strip()
+            if sku:
+                safe_sku = re.sub(r"[^\w.\-]", "_", sku)
+                p = d / f"step{step}-{safe_sku}-{time.strftime('%Y%m%d-%H%M%S')}.png"
+            else:
+                p = d / f"step{step}-{time.strftime('%Y%m%d-%H%M%S')}.png"
             await self.browser.screenshot(str(p))
             self._log(f"  📸 失败现场截图: {p}")
+            return str(p)
         except Exception as exc:
             self._log(f"  ⚠️ 失败截图不可用: {exc}")
+            return None
+
+    # ---- 本地失败诊断（failures.jsonl 索引）----
+    def _current_log_file(self) -> str:
+        """本次运行日志路径：优先 poll 脚本注入的 FULFILLMENT_LOG_FILE，兜底按店铺名推导。"""
+        env_path = os.environ.get("FULFILLMENT_LOG_FILE", "").strip()
+        if env_path:
+            return env_path
+        store = self.state.store_name or self.cfg.store_name or "unknown"
+        safe_store = re.sub(r"[^\w.\-]", "_", store)
+        return str(FAILURES_DIR / f"run-{time.strftime('%Y-%m-%d')}-{safe_store}.log")
+
+    async def _capture_page_diag(self) -> tuple[str, str]:
+        """抓取失败现场：当前页 URL + DOM 摘要（主容器文本前 300 字 + 关键元素计数）。"""
+        try:
+            page = self.browser.page
+            url = page.url or ""
+            summary = await page.evaluate(
+                """() => {
+                    const main = document.querySelector('main, #root-app') || document.body;
+                    const text = (main ? main.innerText || '' : '').replace(/\\s+/g, ' ').trim();
+                    const n = (s) => document.querySelectorAll(s).length;
+                    return JSON.stringify({
+                        text: text.substring(0, 300),
+                        inputs: n('input'),
+                        buttons: n('button'),
+                        days: n('div.day'),
+                        hours: n('div.hour')
+                    });
+                }"""
+            )
+            data = json.loads(summary)
+            dom_summary = (
+                f"text={data.get('text', '')} "
+                f"| input={data.get('inputs', 0)} button={data.get('buttons', 0)} "
+                f"| div.day={data.get('days', 0)} div.hour={data.get('hours', 0)}"
+            )
+            return url, dom_summary
+        except Exception:
+            return "", ""
+
+    def _record_failure(self, step: int, exc: StepError, *,
+                        screenshot: Optional[str] = None,
+                        page_url: str = "", dom_summary: str = "") -> None:
+        """追加一条失败诊断记录到 failures.jsonl（纯本地；写失败静默，不影响主流程）。"""
+        try:
+            record = {
+                "ts": time.strftime("%Y-%m-%d %H:%M:%S"),
+                "store": self.state.store_name or self.cfg.store_name or "",
+                "sku": self.state.sku or "",
+                "name": self.state.name or "",
+                "qty": self.state.qty or "",
+                "box": self.state.box or "",
+                "shipment_id": self.state.shipment_id or "",
+                "record_id": self.state.record_id or "",
+                "failed_step": step,
+                "error_type": exc.err_type,
+                "error_message": exc.message,
+                "recovery_attempted": exc.recovery_attempted or [],
+                "screenshot": screenshot or "",
+                "log_file": self._current_log_file(),
+                "page_url": page_url,
+                "dom_summary": dom_summary,
+            }
+            _append_failure(record)
+            self._log(f"  🗂️ 已记录失败诊断: {FAILURES_JSONL}")
+        except Exception as exc2:
+            self._log(f"  ⚠️ 失败诊断记录失败: {exc2}")
+
+    # ---- Telemetry 云上报（opt-in：telemetry_opt_in=true 且有 auth_token 才 POST）----
+    def _friendly_failure_message(self) -> str:
+        """用户友好失败文案：技术细节不再推给客户（诊断走本地 failures.jsonl + 云上报）。"""
+        return (f"😔 FULL 货物处理中断（{self.state.sku or '未知SKU'} "
+                f"{self.state.name or ''}）。已记录诊断信息，请联系问述科技支持排查。")
+
+    def _report_failure(self, step: int, exc: StepError, *,
+                        screenshot: Optional[str] = None,
+                        page_url: str = "", dom_summary: str = "") -> None:
+        """失败诊断包上报 whyshu-svr 云 API（POST /api/argent/telemetry/failure）。
+
+        opt-in 关闭 / auth_token 缺失 / 网络或服务端错误 → 一律静默（try/except），
+        绝不阻断 FULL 主流程；与本地 failures.jsonl 记录共用同一现场数据。
+        """
+        if not _read_telemetry_opt_in():
+            return
+        token = _read_auth_token()
+        if not token:
+            return
+        body: dict[str, Any] = {
+            "version": _read_skill_version(),
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "store": self.state.store_name or self.cfg.store_name,
+            "sku": self.state.sku,
+            "name": self.state.name,
+            "qty": self.state.qty,
+            "box": self.state.box,
+            "shipment_id": self.state.shipment_id,
+            "record_id": self.state.record_id,
+            "failed_step": step,
+            "error": exc.to_dict(),
+            "log_tail": _read_log_tail(self._current_log_file()),
+            "screenshot_base64": _screenshot_base64(screenshot),
+            "page_url": page_url,
+            "dom_summary": dom_summary,
+        }
+        try:
+            req = urllib.request.Request(
+                TELEMETRY_URL,
+                data=json.dumps(body).encode("utf-8"),
+                headers={"Content-Type": "application/json",
+                         "Authorization": "Bearer " + token},
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                if 200 <= resp.status < 300:
+                    self._log("📡 telemetry 失败诊断包已上报")
+        except Exception as exc2:
+            self._log(f"  ⚠️ telemetry 上报失败(忽略): {exc2}")
 
     async def _wait_any_selector(self, step: int, action: str, chain: list[str],
                                  timeout_first: int = 24, timeout_rest: int = 10) -> None:
@@ -1167,13 +1391,20 @@ class Orchestrator:
         )
         if not has_results:
             msg = f"SKU {self.state.sku} 在店铺 {self.state.store_name} 未找到"
+            exc = StepError(3, "business", msg, recovery_attempted=["check_sku"])
             self._log(f"  ⚠️ {msg}")
+            screenshot = await self._screenshot_on_error(3)
+            page_url, dom_summary = await self._capture_page_diag()
+            self._record_failure(3, exc, screenshot=screenshot,
+                                 page_url=page_url, dom_summary=dom_summary)
+            self._report_failure(3, exc, screenshot=screenshot,
+                                 page_url=page_url, dom_summary=dom_summary)
             if self.state.record_id:
                 self.feishu.update_field(self.state.record_id, "状态", "失败")
                 self.feishu.update_field(self.state.record_id, "就绪", False)
                 self.feishu.update_step(self.state.record_id, f"失败：{msg}")
-                self.feishu.send_message(f"❌ FULL 货件失败: {msg}")
-            raise StepError(3, "business", msg, recovery_attempted=["check_sku"])
+                self.feishu.send_message(self._friendly_failure_message())
+            raise exc
         # 3c. 等 quantity input（ANDES 输入框，无 placeholder = 数量输入）
         try:
             await self.browser.page.wait_for_selector(
@@ -1921,6 +2152,8 @@ class Orchestrator:
             self._log(f"  CDP 端口: {self.browser.cdp_url}")
             await self.browser.connect(download_dir=str(self._dl_dir))
         except StepError as exc:
+            self._record_failure(step_filter or 1, exc)
+            self._report_failure(step_filter or 1, exc)
             return self._result("failed", failed_step=step_filter or 1, error=exc.to_dict(),
                                 step_summaries={}, dry_run=dry_run)
 
@@ -1964,12 +2197,17 @@ class Orchestrator:
                                         error=exc.to_dict(), step_summaries=step_summaries,
                                         dry_run=dry_run)
                 self._log(f"❌ 步骤{step} 失败: {exc.message}")
-                await self._screenshot_on_error(step)
+                screenshot = await self._screenshot_on_error(step)
+                page_url, dom_summary = await self._capture_page_diag()
+                self._record_failure(step, exc, screenshot=screenshot,
+                                     page_url=page_url, dom_summary=dom_summary)
+                self._report_failure(step, exc, screenshot=screenshot,
+                                     page_url=page_url, dom_summary=dom_summary)
                 if self.state.record_id:
                     self.feishu.update_field(self.state.record_id, "状态", "失败")
                     self.feishu.update_field(self.state.record_id, "就绪", False)
                     self.feishu.update_step(self.state.record_id, f"失败：{exc.message}")
-                    self.feishu.send_message(f"❌ FULL 货件失败: {exc.message}")
+                    self.feishu.send_message(self._friendly_failure_message())
                 status = "failed" if not self.state.completed_steps else "partial"
                 return self._result(status, failed_step=step, error=exc.to_dict(),
                                     step_summaries=step_summaries, dry_run=dry_run)
@@ -2099,6 +2337,8 @@ def main(argv: Optional[list[str]] = None) -> int:
                                       shipment_id=args.shipment_id,
                                       store_name=args.store_name))
     except StepError as exc:  # 顶层兜底（如配置缺失/步骤保护未捕获）
+        orch._record_failure(exc.step or 0, exc)
+        orch._report_failure(exc.step or 0, exc)
         result = {"status": "failed", "record_id": orch.state.record_id or None,
                   "shipment_id": orch.state.shipment_id or None,
                   "sku": orch.state.sku or None,
