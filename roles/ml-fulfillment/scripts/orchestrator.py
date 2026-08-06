@@ -88,31 +88,39 @@ def _append_failure(record: dict[str, Any]) -> None:
 # Telemetry 配置读取（opt-in / auth_token / version / log_tail / 截图）
 # ────────────────────────────────────────────────
 
-def _read_telemetry_opt_in() -> bool:
-    """读取 telemetry_opt_in（正则解析顶层键，避免 PyYAML 依赖）。
+# v0.4.0 主路径：配置统一在 ~/.hermes/profiles/argent/（与 argent CLI 的 PROFILE_HOME 一致）
+PROFILE_HOME = Path(os.environ.get(
+    "ARGENT_PROFILE_HOME", Path.home() / ".hermes" / "profiles" / "argent"
+))
 
-    兼容两处配置：~/.argent/config.yaml（本机 argent 实际配置路径）与
-    ~/.hermes/profiles/argent/config.yaml；任一显式 true/1/yes 即开启，其余关闭。
+
+def _read_telemetry_opt_in() -> bool:
+    """读取 telemetry_opt_in（正则解析嵌套键缩进格式，避免 PyYAML 依赖）。
+
+    只读 v0.4.0 主路径 PROFILE_HOME/config.yaml 的 argent.telemetry_opt_in
+    （如 "  telemetry_opt_in: true"）；显式 true/1/yes 即开启，其余关闭。
     """
-    for p in (Path.home() / ".argent" / "config.yaml",
-              Path.home() / ".hermes" / "profiles" / "argent" / "config.yaml"):
-        try:
-            text = p.read_text(encoding="utf-8")
-        except Exception:
-            continue
-        m = re.search(r"^\s*telemetry_opt_in\s*:\s*(\S+)\s*$", text, re.M | re.I)
-        if m:
-            return m.group(1).strip().lower() in ("true", "1", "yes")
+    try:
+        text = (PROFILE_HOME / "config.yaml").read_text(encoding="utf-8")
+    except Exception:
+        return False
+    m = re.search(r"^\s*telemetry_opt_in\s*:\s*(\S+)\s*$", text, re.M | re.I)
+    if m:
+        return m.group(1).strip().lower() in ("true", "1", "yes")
     return False
 
 
 def _read_auth_token() -> str:
-    """读取问述账号 JWT：与 argent CLI 一致（$ARGENT_HOME/auth_token，缺省 ~/.argent/auth_token）。"""
-    home = os.environ.get("ARGENT_HOME") or str(Path.home() / ".argent")
+    """读取问述账号 JWT：与 argent CLI 一致（PROFILE_HOME/.env 的 WHYSHU_API_KEY）。"""
     try:
-        return (Path(home) / "auth_token").read_text(encoding="utf-8").strip()
+        for line in (PROFILE_HOME / ".env").read_text(encoding="utf-8").splitlines():
+            if line.startswith("WHYSHU_API_KEY="):
+                token = line.split("=", 1)[1].strip()
+                if token:
+                    return token
     except Exception:
-        return ""
+        pass
+    return ""
 
 
 def _read_skill_version() -> str:
