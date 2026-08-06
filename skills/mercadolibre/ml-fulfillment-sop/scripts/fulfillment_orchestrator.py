@@ -1636,8 +1636,8 @@ class Orchestrator:
             pass
         # 重建：逐个端口连ML页面，通过用户标识匹配店铺
         USER_PATTERNS = {
-            "1店-子账号": ["HWHuang"],
-            "2店-子账号": ["HXhuang"],
+            "1店-子账号": ["HXhuang"],
+            "2店-子账号": ["HWHuang"],
             "3店-主账号": ["SSILEIXIA"],
         }
         store_map = {}
