@@ -3,7 +3,9 @@
 
 架构（与旧 ziniao-cli 的本原区别）:
     Cron 触发 wrapper (poll-fulfillment.sh, no_agent)
-      → exec /tmp/pw-venv/bin/python3 fulfillment_orchestrator.py --mode full --allow-write
+      → 按店铺并行 spawn /tmp/pw-venv/bin/python3 fulfillment_orchestrator.py \
+        --mode full --allow-write --store-name <店名>
+        → 入口先拿店铺级 flock（/tmp/ziniao-<storeId>.lock），拿不到输出 skipped 退出
         → PlaywrightClient: connect_over_cdp(127.0.0.1:52420) 直连紫鸟浏览器
         → FeishuClient: lark-cli 多维表格 + 消息
         → 每步有: 选择器 fallback 链、自动等待、失败自动截图
@@ -15,13 +17,13 @@
     /tmp/pw-venv/bin/python3 fulfillment_orchestrator.py --mode dry-run [--record-id recXXX]
         只执行只读步骤 1/2/6，写步骤(3/4/5/7/8)全部跳过
     /tmp/pw-venv/bin/python3 fulfillment_orchestrator.py --mode full [--allow-write]
-        全流程编排。写步骤默认拒绝，需 --allow-write 才执行
+        全流程编排。写步骤默认拒绝，需 --allow-write 才执行；--store-name <店名> 仅处理该店铺记录
     /tmp/pw-venv/bin/python3 fulfillment_orchestrator.py --mode step --step N [--allow-write]
         从指定步骤继续（Agent 确认后恢复执行）
 
 返回: stdout 单行 JSON（progress 日志走 stderr，保证 stdout 纯净）
     {
-      "status": "success|partial|failed|no_pending|needs_approval",
+      "status": "success|partial|failed|no_pending|needs_approval|skipped",
       "record_id": "recXXXX", "shipment_id": "12345678", "sku": "HW-MX-026-01",
       "completed_steps": [1,2,3], "failed_step": null,
       "error": {"step":4,"type":"selector_not_found","message":"...","recovery_attempted":[...]},
@@ -1058,6 +1060,7 @@ class Orchestrator:
         self.feishu = FeishuClient(cfg)
         self.state = RunState()
         self._dl_dir: Optional[Path] = None  # 由 _open_store() 设置（store open 返回的下载目录）
+        self._store_lock: Optional[Any] = None  # 店铺级 flock 锁 fd（run() 中获取，进程退出自动释放）
 
     # ---- 日志（stderr，保持 stdout 纯 JSON）----
     @staticmethod
@@ -1717,12 +1720,41 @@ class Orchestrator:
         ports = _discover_cdp_ports()
         return ports[0] if ports else None
 
+    # ---- 店铺级 flock 互斥锁 ----
+    def _resolve_store_id(self) -> str:
+        """解析店铺级锁的 storeId：店铺名 → STORE_MAP；未指定店铺时 cfg.store_id；兜底 3店。"""
+        store_name = self.state.store_name or self.cfg.store_name
+        info = STORE_MAP.get(store_name) if store_name else None
+        if info:
+            return info["store_id"]
+        if self.cfg.store_id:
+            return self.cfg.store_id
+        return STORE_MAP["3店"]["store_id"]
+
+    def _acquire_store_lock(self) -> Optional[Any]:
+        """非阻塞获取店铺级 flock 互斥锁（/tmp/ziniao-<storeId>.lock）。
+
+        同店并发（cron 多轮重叠 / 重复 spawn）时后到进程拿不到锁 → 返回 None，
+        调用方输出 {"status":"skipped","reason":"store_busy"} 后以退出码 0 退出（下轮重试）。
+        锁随进程退出自动释放；fd 引用保存在 self._store_lock 防止被提前回收。
+        """
+        import fcntl
+        lock_path = f"/tmp/ziniao-{self._resolve_store_id()}.lock"
+        f = open(lock_path, "a+")
+        try:
+            fcntl.flock(f.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            f.close()
+            return None
+        return f
+
     # ==================================================
     # 主流程
     # ==================================================
     async def run(self, mode: str, allow_write: bool, step_filter: Optional[int],
                   record_id: Optional[str], sku: Optional[str], qty: Optional[str],
-                  box: Optional[str], shipment_id: Optional[str]) -> dict[str, Any]:
+                  box: Optional[str], shipment_id: Optional[str],
+                  store_name: Optional[str] = None) -> dict[str, Any]:
         """执行编排，返回结构化结果 dict（异常也会被捕获转为 failed JSON）。"""
         self._log(f"🚀 FULL 货件编排启动 mode={mode} allow_write={allow_write}")
 
@@ -1734,13 +1766,20 @@ class Orchestrator:
                 self.state.box = box or ""
         else:
             pending = self.feishu.list_pending()
-            if not pending:
-                self._log("没有待处理的 Pending 记录，本轮退出。")
+            if store_name:
+                # 指定店铺：取第一条店铺名匹配的记录（空店铺名历史记录不在此列）
+                rec = next((r for r in pending if r.get("store_name") == store_name), None)
+                if rec is None:
+                    self._log(f"没有 {store_name} 的待处理 Pending 记录，本轮退出。")
+            else:
+                rec = pending[0] if pending else None
+                if rec is None:
+                    self._log("没有待处理的 Pending 记录，本轮退出。")
+            if rec is None:
                 return {"status": "no_pending", "record_id": None, "shipment_id": None,
                         "sku": None, "completed_steps": [], "failed_step": None,
                         "error": None, "files_uploaded": {}, "dry_run": mode == "dry-run",
                         "write_steps": list(WRITE_STEPS)}
-            rec = pending[0]
             self.state.record_id = rec["record_id"]
             self.state.sku = rec["sku"]
             self.state.name = rec["name"]
@@ -1756,6 +1795,12 @@ class Orchestrator:
             self.state.shipment_id = shipment_id
         self._log(f"🚀 处理: {self.state.sku} {self.state.name} "
                   f"{self.state.qty}件 {self.state.box}箱 (record={self.state.record_id})")
+
+        # 店铺级 flock 互斥锁：确定店铺名之后、打开浏览器之前获取（进程退出自动释放）
+        self._store_lock = self._acquire_store_lock()
+        if self._store_lock is None:
+            self._log("店铺忙（其他进程持有 flock 锁），本轮跳过。")
+            return {"status": "skipped", "reason": "store_busy"}
 
         dry_run = mode == "dry-run"
         # dry_run 模式不写飞书 Base（保持零副作用）
@@ -1893,7 +1938,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--box", help="箱数（配合 --record-id 使用）")
     p.add_argument("--shipment-id", help="货件号（步骤 6/7/8 恢复时使用）")
     p.add_argument("--store-id", help="覆盖店铺 ID（兼容保留，CDP 模式不再使用）")
-    p.add_argument("--store-name", help="覆盖店铺名称（兼容保留，CDP 模式不再使用）")
+    p.add_argument("--store-name", help="店铺名过滤待处理记录（如 1店；取第一条店铺名匹配的 Pending+就绪 记录）")
     p.add_argument("--cdp-url", help=f"紫鸟浏览器 CDP 地址（默认 {DEFAULT_CDP_URL}）")
     return p
 
@@ -1947,7 +1992,8 @@ def main(argv: Optional[list[str]] = None) -> int:
         result = asyncio.run(orch.run(mode=args.mode, allow_write=args.allow_write,
                                       step_filter=args.step, record_id=args.record_id,
                                       sku=args.sku, qty=args.qty, box=args.box,
-                                      shipment_id=args.shipment_id))
+                                      shipment_id=args.shipment_id,
+                                      store_name=args.store_name))
     except StepError as exc:  # 顶层兜底（如配置缺失/步骤保护未捕获）
         result = {"status": "failed", "record_id": orch.state.record_id or None,
                   "shipment_id": orch.state.shipment_id or None,
@@ -1956,7 +2002,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                   "failed_step": exc.step or None,
                   "error": exc.to_dict(), "files_uploaded": orch.state.files_uploaded}
     print(json.dumps(result, ensure_ascii=False))
-    return 0 if result.get("status") in ("success", "no_pending", "needs_approval") else 1
+    return 0 if result.get("status") in ("success", "no_pending", "needs_approval", "skipped") else 1
 
 
 if __name__ == "__main__":
