@@ -54,6 +54,7 @@ push:
 - `references/andes-components.md` — Andes React 组件交互规则：PointerEvent 全序列、robustClick、日历定位
 - `references/pitfalls.md` — 已知陷阱与修复清单：导航栏误触、ID 大小写、PDF 前缀、下载目录等
 - `references/cdp-port-mapping.md` — 多店铺 CDP 端口策略：动态发现、缓存、store 操作规范
+- `references/multi-window-concurrency.md` — 🆕 紫鸟多窗口并发实测（2026-08-06）：跨窗口隔离、同窗口共享状态、flock 店铺粒度互斥锁设计
 
 ## 操作警告与触发生效条件
 
