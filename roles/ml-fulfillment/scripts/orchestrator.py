@@ -1324,6 +1324,7 @@ class Orchestrator:
         与 poll-fulfillment.sh 验证过的算法一致；若当前视图不足则翻月重试一次。
         """
         day_sel = "div.day"
+        days = self.browser.page.locator("div.day")
         for flip in range(2):
             # 直接用 page.evaluate 找 div.day--current 在所有 div.day 中的索引
             idx = await self.browser.page.evaluate(
@@ -1336,9 +1337,29 @@ class Orchestrator:
                 }"""
             )
             if idx < 0:
-                raise StepError(4, "selector_not_found", "未找到 div.day--current",
-                                recovery_attempted=[f"gray_circle_flip_{flip}"])
-            days = self.browser.page.locator("div.day")
+                # fallback：无 div.day--current（pitfall #123）——选视图内最后一个可用日期
+                fb = await self.browser.page.evaluate(
+                    """() => {
+                        const days = document.querySelectorAll('div.day');
+                        for (let i = days.length - 1; i >= 0; i--) {
+                            const t = (days[i].textContent || '').trim();
+                            if (/^\\d+$/.test(t) && !days[i].classList.contains('day--disabled')) return i;
+                        }
+                        return -1;
+                    }"""
+                )
+                if fb < 0:
+                    # 当前视图无可用日：flip==0 翻月重试；flip==1 抛错
+                    if flip == 0:
+                        await self._flip_month()
+                        continue
+                    raise StepError(4, "selector_not_found", "日期选择失败：无 day--current 且无可选日期格",
+                                    recovery_attempted=["gray_circle_fallback"])
+                self._log(f"  ⚠️ 未找到 div.day--current，fallback 选视图内最后可用日 (idx={fb})")
+                txt = (await days.nth(fb).text_content() or "").strip()
+                await days.nth(fb).click(timeout=15000)
+                await asyncio.sleep(1.0)
+                return txt
             n = await days.count()
             target = idx + 31  # 确保至少31天后（表头占7格，+30可能不够）
             if target >= n:
