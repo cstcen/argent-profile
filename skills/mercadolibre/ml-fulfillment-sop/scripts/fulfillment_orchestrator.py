@@ -442,20 +442,27 @@ class PlaywrightClient:
             await self.page.wait_for_selector("main, #root-app", timeout=15000)
         except Exception:
             pass
-        # 等待旋转蒙层消失（比纯 sleep 更准确反映页面就绪）
-        await self._wait_spinner_gone(timeout=timeout)
+        # 等待旋转蒙层消失（比纯 sleep 更准确反映页面就绪；hidden 等待内部封顶 5s）
+        await self._wait_spinner_gone()
         if wait_after:
             await asyncio.sleep(wait_after)
 
-    async def _wait_spinner_gone(self, timeout: int = 30) -> None:
-        """等待 ML 页面切换旋转蒙层出现→消失。日历等子组件加载不用此方法。"""
+    async def _wait_spinner_gone(self) -> None:
+        """等待 ML 页面旋转蒙层出现→消失（hidden 最多等 5s，常驻 loader 不阻塞导航）。
+
+        实测（2026-08-06）：shipment_planning/plans 搜索页的 remote-module__loading /
+        main-fetching-spinner 在 goto 后 ~6s 出现并持续可见 60-90s，而真实内容
+        （结果表格 / 数量输入框）约 10-12s 就绪——spinner 只是过渡提示，不能作为
+        页面就绪的硬性条件；页面就绪由后续步骤的 wait_for_selector / wait_for_text /
+        wait_for_url 保证。hidden 等待封顶 5s，避免导航被常驻 loader 白等。
+        """
         spinner = self.page.locator(
             '[class*=spinner], [class*=spin], [class*=loading], '
             '.andes-spinner, [role=progressbar], [aria-busy=true]'
         )
         try:
             await spinner.first.wait_for(state="visible", timeout=5000)
-            await spinner.first.wait_for(state="hidden", timeout=timeout * 1000)
+            await spinner.first.wait_for(state="hidden", timeout=5000)
         except Exception:
             pass
 
