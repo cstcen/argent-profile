@@ -84,6 +84,27 @@ def _append_failure(record: dict[str, Any]) -> None:
         pass
 
 
+# 紫鸟「网络修复」页检测（层1 navigate 自愈 + 层2 网络类错误分类共用）
+ZINIA_ERROR_URL_MARK = "chrome-extension://"
+ZINIA_ERROR_PATH_MARK = "/error.html"
+ZINIA_ERROR_KEYWORDS = ("正在修复", "网络波动", "请求平台超时")
+ZINIA_NETWORK_RETRY_TAG = "zinia_network_retry"   # navigate 自愈重试的 recovery 标记
+AUTO_RETRY_MAX = 2                                 # 网络类错误自动重置次数上限
+SEARCH_WRONG_PAGE_MARKERS = ("Algunas de tus publicaciones",
+                             "Tus publicaciones")   # Mis publicaciones 商品列表页特征
+
+
+def _ziniao_error_by_diag(page_url: str, dom_summary: str) -> bool:
+    """按失败现场（当前页 URL + DOM 摘要）判断是否紫鸟「网络修复」页。
+
+    与 PlaywrightClient._is_ziniao_error_page() 的检测口径一致，供层2失败分支
+    复用（此时浏览器可能已不可用，只能靠已抓取的现场数据判断）。
+    """
+    if ZINIA_ERROR_URL_MARK in page_url and ZINIA_ERROR_PATH_MARK in page_url:
+        return True
+    return any(k in (dom_summary or "") for k in ZINIA_ERROR_KEYWORDS)
+
+
 # ────────────────────────────────────────────────
 # Telemetry 配置读取（opt-in / auth_token / version / log_tail / 截图）
 # ────────────────────────────────────────────────
@@ -537,10 +558,35 @@ class PlaywrightClient:
 
     async def navigate(self, url: str, step: int = 0, wait_after: float = 0.0,
                        timeout: int = 60) -> None:
-        try:
-            await self.page.goto(url, wait_until="domcontentloaded", timeout=timeout * 1000)
-        except Exception as exc2:
-            raise StepError(step, "timeout", f"页面导航失败: {url}: {exc2}") from exc2
+        # 层1自愈：goto 失败（ERR_CONNECTION_CLOSED 等）或成功后页面为紫鸟「网络修复」页
+        # （chrome-extension://*/error.html）时，轮询等待紫鸟修复完成（最多 60s），
+        # 再重新 goto 目标 URL（最多重试 2 次，每次重试前再等 5s）；重试仍失败才抛 StepError。
+        last_exc: Optional[Exception] = None
+        for attempt in range(AUTO_RETRY_MAX + 1):  # 首次 + 最多 2 次重试
+            try:
+                await self.page.goto(url, wait_until="domcontentloaded",
+                                     timeout=timeout * 1000)
+                last_exc = None
+            except Exception as exc2:
+                last_exc = exc2
+                print(f"[{time.strftime('%H:%M:%S')}] ⚠️ goto 失败(第{attempt + 1}次): {exc2}",
+                      file=sys.stderr, flush=True)
+            # goto 成功或失败后统一检测紫鸟修复页（「成功」但内容是 error.html 也算失败）
+            if await self._is_ziniao_error_page():
+                print(f"[{time.strftime('%H:%M:%S')}] ⏳ 等待紫鸟网络修复...",
+                      file=sys.stderr, flush=True)
+                if await self._wait_ziniao_repaired():
+                    await asyncio.sleep(5)  # 修复完成后等 5s 再重试
+                continue
+            if last_exc is None:
+                break  # goto 成功且页面正常
+            raise StepError(step, "timeout", f"页面导航失败: {url}: {last_exc}") from last_exc
+        else:
+            # 循环耗尽：3 次尝试全部命中紫鸟修复页且等待/重试未恢复
+            raise StepError(step, "timeout",
+                            f"页面导航失败（紫鸟网络修复未完成，error.html 仍存在）: {url}: "
+                            f"{last_exc or ''}",
+                            recovery_attempted=[ZINIA_NETWORK_RETRY_TAG])
         # 等待页面主体容器渲染完成（避免后续点击误触导航栏）
         try:
             await self.page.wait_for_selector("main, #root-app", timeout=15000)
@@ -550,6 +596,64 @@ class PlaywrightClient:
         await self._wait_spinner_gone()
         if wait_after:
             await asyncio.sleep(wait_after)
+
+    async def _is_ziniao_error_page(self) -> bool:
+        """检测当前页面是否为紫鸟「网络修复」页（chrome-extension://*/error.html）。
+
+        URL 命中即真；否则取 body 文本前 500 字匹配修复关键词（goto 失败后页面
+        URL 可能仍是旧页，此时以文本为准）。
+        """
+        try:
+            url = self.page.url or ""
+        except Exception:
+            url = ""
+        if ZINIA_ERROR_URL_MARK in url and ZINIA_ERROR_PATH_MARK in url:
+            return True
+        try:
+            body = await self.page.evaluate(
+                "() => (document.body ? document.body.innerText || '' : '').slice(0, 500)")
+        except Exception:
+            return False
+        return any(k in body for k in ZINIA_ERROR_KEYWORDS)
+
+    async def _wait_ziniao_repaired(self, timeout: float = 60.0,
+                                    interval: float = 5.0) -> bool:
+        """轮询等待紫鸟网络修复完成（error.html 消失），最多 timeout 秒（默认 60s/12 次）。
+
+        返回 True=已恢复；False=超时未恢复。
+        """
+        waited = 0.0
+        while waited < timeout:
+            await asyncio.sleep(interval)
+            waited += interval
+            if not await self._is_ziniao_error_page():
+                print(f"[{time.strftime('%H:%M:%S')}] ✅ 紫鸟网络已恢复",
+                      file=sys.stderr, flush=True)
+                return True
+            print(f"[{time.strftime('%H:%M:%S')}] ⏳ 等待紫鸟网络修复... "
+                  f"({int(waited)}s/{int(timeout)}s)",
+                  file=sys.stderr, flush=True)
+        return False
+
+    async def verify_search_page(self) -> bool:
+        """验证当前页面是 shipment_planning 搜索结果页（防紫鸟波动后窗口残留异常态跳错页）。
+
+        URL 含 /shipment_planning/ 即通过（正确搜索 URL 本身带 /publicaciones/ 前缀，
+        故不做「不含 publicaciones」判断，避免误杀）；URL 未命中时检查 body 是否出现
+        Mis publicaciones 商品列表页特征（Algunas de tus publicaciones…）。
+        """
+        try:
+            url = self.page.url or ""
+        except Exception:
+            url = ""
+        if "/shipment_planning/" in url:
+            return True
+        try:
+            body = await self.page.evaluate(
+                "() => (document.body ? document.body.innerText || '' : '').slice(0, 500)")
+        except Exception:
+            body = ""
+        return not any(m in body for m in SEARCH_WRONG_PAGE_MARKERS)
 
     async def _wait_spinner_gone(self) -> None:
         """等待 ML 页面旋转蒙层出现→消失（hidden 最多等 5s，常驻 loader 不阻塞导航）。
@@ -1328,6 +1432,94 @@ class Orchestrator:
         except Exception as exc2:
             self._log(f"  ⚠️ telemetry 上报失败(忽略): {exc2}")
 
+    # ---- 网络类错误自动重置（层2 cron 兜底：保留货件号续传，最多 AUTO_RETRY_MAX 次）----
+    def _is_network_error(self, exc: StepError, *, page_url: str = "",
+                          dom_summary: str = "") -> bool:
+        """判断是否紫鸟网络类错误：失败现场为修复页，或 timeout 且消息含网络关键词。
+
+        选择器/业务类错误绝不判为网络错误（防重复写操作）。
+        """
+        if _ziniao_error_by_diag(page_url, dom_summary):
+            return True
+        msg = exc.message or ""
+        return (exc.err_type in ("timeout",)
+                and any(k in msg for k in ("ERR_CONNECTION_CLOSED", "error.html",
+                                           "网络", ZINIA_NETWORK_RETRY_TAG)))
+
+    def _auto_retry_count(self, record_id: str) -> int:
+        """读取 failures.jsonl 中该 record 的自动重试标记数。
+
+        重试次数持久化在本地 failures.jsonl（event=auto_retry 行），不依赖 Base
+        新增字段——避免客户飞书表格缺字段导致次数永远读不到、无限重置。
+        """
+        try:
+            count = 0
+            with open(FAILURES_JSONL, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        d = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if d.get("event") == "auto_retry" and d.get("record_id") == record_id:
+                        count += 1
+            return count
+        except Exception:
+            return 0
+
+    def _append_auto_retry(self, record_id: str, retry_no: int) -> None:
+        """追加自动重试标记到 failures.jsonl（与失败诊断同文件，event=auto_retry 区分）。"""
+        try:
+            _append_failure({
+                "ts": time.strftime("%Y-%m-%d %H:%M:%S"),
+                "event": "auto_retry",
+                "record_id": record_id,
+                "store": self.state.store_name or self.cfg.store_name or "",
+                "sku": self.state.sku or "",
+                "shipment_id": self.state.shipment_id or "",
+                "retry_no": retry_no,
+            })
+        except Exception:
+            pass
+
+    def _maybe_auto_reset(self, step: int, exc: StepError, *,
+                          page_url: str = "", dom_summary: str = "") -> Optional[int]:
+        """网络类错误自动重置记录（层2 cron 兜底，最多 AUTO_RETRY_MAX 次）。
+
+        仅限网络类错误（timeout / ERR_CONNECTION_CLOSED / 紫鸟修复页）；选择器/业务类
+        错误绝不自动重置（防重复写操作）。重置动作：
+          状态 → Pending、就绪 → true、当前步骤 → 空；
+          ⚠️ 货件号字段【保留不动】——有货件号则下轮跳过步骤3从步骤4续传，
+          无货件号从头跑。
+        返回本次重试序号（1/2）表示已重置；返回 None 表示未触发（无记录 /
+        非网络类错误 / 已达重试上限）。
+        """
+        record_id = self.state.record_id
+        if not record_id:
+            return None
+        if not self._is_network_error(exc, page_url=page_url, dom_summary=dom_summary):
+            self._log("  ℹ️ 非网络类错误，不触发自动重置（走人工流程）")
+            return None
+        retry_count = self._auto_retry_count(record_id)
+        if retry_count >= AUTO_RETRY_MAX:
+            self._log(f"  ⛔ 网络类错误但已达自动重试上限（{retry_count}/{AUTO_RETRY_MAX}），"
+                      f"保持失败，走人工流程")
+            return None
+        n = retry_count + 1
+        # ⚠️ 只 patch 状态/就绪/当前步骤，绝不触碰货件号（续传前提）
+        self.feishu.update_field(record_id, "状态", "Pending")
+        self.feishu.update_field(record_id, "就绪", True)
+        self.feishu.update_step(record_id, "")
+        self._append_auto_retry(record_id, n)
+        self.feishu.send_message(
+            f"⚠️ 网络波动自动重试（第 {n} 次），下轮 cron 自动续传"
+            + (f"（货件号 {self.state.shipment_id} 保留）" if self.state.shipment_id else ""))
+        self._log(f"  🔄 网络波动自动重试（第 {n} 次）：记录 {record_id} 重置为 Pending，"
+                  f"货件号{'保留' if self.state.shipment_id else '无，从头跑'}")
+        return n
+
     async def _wait_any_selector(self, step: int, action: str, chain: list[str],
                                  timeout_first: int = 24, timeout_rest: int = 10) -> None:
         """按 fallback 链依次等待任一选择器出现；全部超时抛 StepError。"""
@@ -1391,6 +1583,15 @@ class Orchestrator:
         # 3a. 直接用 URL query 搜索 SKU
         search_url = f"https://www.mercadolibre.com.mx/publicaciones/listado/shipment_planning/plans?search={self.state.sku}"
         await self.browser.navigate(search_url, step=3, wait_after=1.0)
+        # 3a2. 验证页面确实是 shipment_planning 搜索结果页（防紫鸟波动后窗口残留异常态跳错页）；
+        #      navigate() 自愈后 URL 应已正确，此验证是第二道保险
+        if not await self.browser.verify_search_page():
+            self._log("  ⚠️ 搜索后页面不是搜索结果页（疑似跳错页），重新导航 1 次")
+            await self.browser.navigate(search_url, step=3, wait_after=1.0)
+            if not await self.browser.verify_search_page():
+                raise StepError(3, "business",
+                                "搜索后页面被跳转到非搜索结果页（疑似网络波动后窗口残留异常态）",
+                                recovery_attempted=["search_page_verify"])
         self._log(f"  SKU {self.state.sku} 已搜索")
         # 3b. 检测搜索结果：仅看是否出现 "0 resultados"
         await asyncio.sleep(2)
@@ -2236,14 +2437,22 @@ class Orchestrator:
                                      page_url=page_url, dom_summary=dom_summary)
                 self._report_failure(step, exc, screenshot=screenshot,
                                      page_url=page_url, dom_summary=dom_summary)
+                auto_retry: Optional[int] = None
                 if self.state.record_id:
                     self.feishu.update_field(self.state.record_id, "状态", "失败")
                     self.feishu.update_field(self.state.record_id, "就绪", False)
                     self.feishu.update_step(self.state.record_id, f"失败：{exc.message}")
-                    self.feishu.send_message(self._friendly_failure_message())
+                    # 层2兜底：网络类错误自动重置（保留货件号续传，最多 2 次）→ 状态改回 Pending
+                    auto_retry = self._maybe_auto_reset(step, exc, page_url=page_url,
+                                                        dom_summary=dom_summary)
+                    if auto_retry is None:
+                        self.feishu.send_message(self._friendly_failure_message())
                 status = "failed" if not self.state.completed_steps else "partial"
-                return self._result(status, failed_step=step, error=exc.to_dict(),
-                                    step_summaries=step_summaries, dry_run=dry_run)
+                result = self._result(status, failed_step=step, error=exc.to_dict(),
+                                      step_summaries=step_summaries, dry_run=dry_run)
+                if auto_retry is not None:
+                    result["auto_retry"] = auto_retry  # 已自动重置：下轮 cron 续传
+                return result
             # 每步完成后同步 Base 当前步骤（dry_run 不写）
             if self.state.record_id and step < 8 and not dry_run:
                 self.feishu.update_step(self.state.record_id, f"步骤{step + 1}：{STEP_NAMES[step + 1]}")
