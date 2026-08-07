@@ -1626,16 +1626,27 @@ class Orchestrator:
             await asyncio.sleep(0.8)
         await self.browser.fill_with_fallback(3, "qty_input", self.state.qty, wait_after=1.0)
         self._log("  等待 Continuar 按钮启用...")
-        # 3d. 等 Continuar 按钮出现再点击（最长 25s），不再依赖 sleep(3) 盲等
-        #     ⚠️ 不能用裸 'button'——导航栏按钮会立即匹配，等待形同虚设；必须等
-        #     textContent=Continuar 的按钮进入 DOM（ML 搜索页异步渲染 ~10-12s）
-        try:
-            await self.browser.page.wait_for_selector(
-                'button:has-text("Continuar")', timeout=25000, state="attached")
-        except Exception:
-            pass
+        # 3d. 等 Continuar 按钮「可用」（精确文本 + 非 disabled + 可见），最长 30s
+        #     注意：has-text 会匹配 disabled 的加载中按钮（存在即通过，1s 就往下走），
+        #     但 click_with_fallback 要求 textContent 精确 === Continuar 且 !disabled，
+        #     等待条件与点击条件不一致 → disabled 时点击 notfound。必须轮询等 !disabled。
+        for _ in range(30):
+            ok = await self.browser.page.evaluate('''() => {
+                const btns = Array.from(document.querySelectorAll('button'));
+                return btns.some(b => {
+                    const t = (b.textContent || '').trim();
+                    const r = b.getBoundingClientRect();
+                    return t === 'Continuar' && !b.disabled && r.width > 0 && r.height > 0;
+                });
+            }''')
+            if ok:
+                break
+            await asyncio.sleep(1)
+        else:
+            # 30s 仍未启用：截图由外层失败处理兜底，抛 StepError
+            raise StepError(3, "selector_not_found", "Continuar 按钮 30s 内未启用（仍 disabled）",
+                            recovery_attempted=["wait_enabled_30s"])
         await self._dismiss_overlay()  # 点击前再清一次蒙层
-        # 3d. Continuar → 弹窗 → 跳转 hub → 货件号
         await self.browser.click_with_fallback(3, "continuar_btn", "Continuar", wait_after=2.0)
         modal_chain = self.sel.chain(3, "plan_modal_btn")
         for idx, sel in enumerate(modal_chain):
