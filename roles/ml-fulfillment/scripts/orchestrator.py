@@ -1816,7 +1816,24 @@ class Orchestrator:
         if r != "clicked":
             raise StepError(4, "selector_not_found", "未找到第1个 Confirmar（日历区）",
                             recovery_attempted=["retry_3x"])
-        await asyncio.sleep(2)
+        # 4e-1. 输入框写入验证（替代/叠加原 sleep(2)）：日历区确认后日期时间必须写入只读输入框
+        #       （如 "7 de septiembre, 2:00 hs"）。未写入 → 重试日历区 Confirmar（最多 2 次，
+        #       间隔 1.5s，重试后重新验证）→ 仍为空抛 business 错，避免空表单提交。
+        async def _ensure_input_written() -> None:
+            if await self._wait_appointment_input_written():
+                return
+            for attempt in range(2):
+                self._log(f"  ⚠️ 日期时间输入框为空，重试点击日历区 Confirmar ({attempt + 1}/2)")
+                await asyncio.sleep(1.5)
+                await self.browser.click_button("Confirmar", confirm_chain[0],
+                                                require_enabled=False, step=4)
+                if await self._wait_appointment_input_written():
+                    return
+            raise StepError(4, "business", "日历区确认未写入日期时间（输入框为空）",
+                            recovery_attempted=["calendar_confirm_retry"])
+
+        await _ensure_input_written()
+        self._log(f"  日历区确认已写入日期时间: {await self._appointment_input_value()}")
         # 第2次：点主确认——日历区确认后主确认是页面上（top>700 的）Confirmar，
         # 不能再用 confirm_chain[0]（那仍是日历区按钮）
         main_btn = self.browser.page.locator("button", has_text="Confirmar").last
@@ -1825,6 +1842,8 @@ class Orchestrator:
             if not box or box["y"] < 700:
                 raise StepError(4, "selector_not_found", "主 Confirmar 不可用或未找到",
                                 recovery_attempted=["retry_3x"])
+            # 4e-2. 防御性再验证：主确认点击前输入框必须已写入（为空走上重试/抛错）
+            await _ensure_input_written()
             await main_btn.click(timeout=15000)
         except StepError:
             raise
@@ -1993,6 +2012,33 @@ class Orchestrator:
                 await asyncio.sleep(1.0)
         raise StepError(4, "selector_not_found", "日期选择失败：点击后 day--selected 未生效",
                         recovery_attempted=["day_selected_retry"])
+
+    async def _appointment_input_value(self) -> str:
+        """读取预约日期时间只读输入框当前值（与 4c 点击打开的输入框同一元素）。"""
+        try:
+            return await self.browser.page.evaluate(
+                """() => {
+                    const el = document.querySelector('input[readonly]');
+                    return el ? (el.value || '') : '';
+                }"""
+            )
+        except Exception:
+            return ""
+
+    async def _wait_appointment_input_written(self, timeout: float = 6.0) -> bool:
+        """轮询日期时间只读输入框，等待日历区 Confirmar 写入日期+时间。
+
+        判定：值非空且含 "HH:MM" 时间文本（如 "7 de septiembre, 2:00 hs"）。
+        每 0.5s 检查一次，最长 timeout 秒；未写入返回 False。
+        """
+        deadline = time.monotonic() + timeout
+        while True:
+            val = await self._appointment_input_value()
+            if val and re.search(r"\d{1,2}:\d{2}", val):
+                return True
+            if time.monotonic() >= deadline:
+                return False
+            await asyncio.sleep(0.5)
 
     async def _dismiss_overlay(self) -> None:
         """关闭页面教程/广告蒙层（coachmarks + ML 广告/推广弹窗）。"""
