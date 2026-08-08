@@ -239,12 +239,49 @@ STEP_NAMES: dict[int, str] = {
 # 配置
 # ────────────────────────────────────────────────
 
-# 店铺名称 → 紫鸟店铺映射（飞书「店铺名称」字段 1店/2店/3店）
+# 店铺映射（开发测试用，客户环境由 stores.json 提供）
+# orchestrator 优先读本地 stores.json（~/.hermes/scripts/stores.json，初始化向导生成，
+# key = 紫鸟环境名 = 飞书「店铺名称」单选选项）；stores.json 缺失时才回退内置 STORE_MAP
+# （本机开发测试兜底，运行时日志标注 dev 模式）。内置映射不打包给客户。
 STORE_MAP = {
     "1店": {"name": "1店-子账号", "store_id": "27477945046190"},
     "2店": {"name": "2店-子账号", "store_id": "27494792824433"},
     "3店": {"name": "3店-主账号", "store_id": "27581021073442"},
 }
+
+STORES_JSON = Path.home() / ".hermes" / "scripts" / "stores.json"
+
+
+def _load_stores() -> dict[str, dict[str, Any]]:
+    """读取本地店铺映射 stores.json（客户机器由初始化向导生成，不在 git 仓库）。
+
+    key = 紫鸟环境名（ziniao-cli store list 的 storeName）= 飞书「店铺名称」单选选项；
+    value = {"store_id", "platform", "cdp_port"}。
+    文件缺失/损坏 → 返回 {}（调用方决定报错提示初始化向导或回退 STORE_MAP dev 模式）。
+    """
+    try:
+        data = json.loads(STORES_JSON.read_text(encoding="utf-8"))
+        if isinstance(data, dict):
+            return {str(k): v for k, v in data.items() if isinstance(v, dict)}
+    except Exception:
+        pass
+    return {}
+
+
+def _resolve_store(store_name: str) -> tuple[Optional[dict[str, Any]], bool]:
+    """按店铺名解析店铺信息 → (info, dev_mode)。
+
+    优先本地 stores.json（环境名 key）；stores.json 缺失时回退内置 STORE_MAP
+    （开发测试用，客户环境由 stores.json 提供）。
+    """
+    stores = _load_stores()
+    if stores:
+        return stores.get(store_name), False
+    info = STORE_MAP.get(store_name)
+    if not info:
+        # STORE_MAP 兼容环境名直查（key=短名 1店 / name=环境名 1店-子账号）
+        info = next((v for v in STORE_MAP.values() if v.get("name") == store_name), None)
+    return info, True
 
 
 @dataclass
@@ -310,7 +347,7 @@ class StepError(Exception):
                  recovery_attempted: Optional[list[str]] = None) -> None:
         super().__init__(message)
         self.step = step
-        self.err_type = err_type          # selector_not_found | timeout | cli_error | parse_error | business
+        self.err_type = err_type          # selector_not_found | timeout | cli_error | parse_error | business | config_error
         self.message = message
         self.recovery_attempted = recovery_attempted or []
 
@@ -2200,14 +2237,27 @@ class Orchestrator:
             return False
 
     def _open_store(self) -> tuple[Path, Optional[int]]:
-        """切换到目标店铺（可见窗口，每店独立CDP端口）。不关店，频繁关店可能触发ML安全检测。"""
-        store_info = STORE_MAP.get(self.state.store_name)
+        """切换到目标店铺（可见窗口，每店独立CDP端口）。不关店，频繁关店可能触发ML安全检测。
+
+        店铺识别：优先本地 stores.json（环境名 key = 飞书「店铺名称」选项）；
+        stores.json 缺失时回退内置 STORE_MAP（开发测试用，日志标注 dev 模式）。
+        """
+        store_name = self.state.store_name or self.cfg.store_name
+        if not store_name:
+            raise StepError(1, "config_error",
+                            "未指定店铺名称，请运行初始化向导（argent skill setup ml-fulfillment）")
+        store_info, dev_mode = _resolve_store(store_name)
         if not store_info:
-            store_info = STORE_MAP["3店"]  # 兜底
+            raise StepError(1, "config_error",
+                            f"未找到店铺 {store_name} 的紫鸟环境，请运行初始化向导（argent skill setup ml-fulfillment）")
+        if dev_mode:
+            self._log("  ⚠️ stores.json 缺失，使用内置 STORE_MAP（开发测试用，客户环境由 stores.json 提供）")
+        # 紫鸟环境名：stores.json 的 key 即环境名；STORE_MAP 的 name 即环境名
+        env_name = store_info.get("name") or store_name
         # 打开目标店铺
         try:
             result = subprocess.run(
-                ["ziniao-cli", "store", "open", "--name", store_info["name"]],
+                ["ziniao-cli", "store", "open", "--name", env_name],
                 capture_output=True, text=True, timeout=60,
             )
             data = json.loads(result.stdout)
@@ -2215,101 +2265,72 @@ class Orchestrator:
             reused = data.get("data", {}).get("reused", False)
         except Exception as exc:
             raise StepError(1, "cli_error",
-                            f"ziniao-cli store open 失败（店铺 {store_info['name']}）: {exc}") from exc
+                            f"ziniao-cli store open 失败（店铺 {env_name}）: {exc}") from exc
         # 发现目标店铺的 CDP 端口
-        port = self._find_store_port(store_info["name"], reused)
-        self._log(f"  店铺: {store_info['name']} (storeId={store_info['store_id']})")
+        port = self._find_store_port(env_name, reused)
+        self._log(f"  店铺: {env_name} (storeId={store_info['store_id']})")
         self._log(f"  下载目录: {dl_path}")
         return Path(dl_path), port
 
     def _build_port_map(self) -> dict[str, int]:
-        """启动时一次性建立端口→店铺映射。
-        
-        先读缓存 (~/.hermes/scripts/cdp-port-map.json)，失效则遍历CDP端口通过ML用户识别。
+        """启动时建立环境名→CDP端口映射。
+
+        识别映射来自 stores.json（环境名 key → cdp_port，初始化向导写入）；
+        端口探测（lsof）保留，仅作 stores.json 缺失/无 cdp_port 时的兜底发现。
+        不再从页面提取用户标识匹配（移除 USER_PATTERNS）。
         """
+        port_map: dict[str, int] = {}
+        for env_name, info in _load_stores().items():
+            port = info.get("cdp_port")
+            if port:
+                port_map[env_name] = int(port)
+        if port_map:
+            return port_map
+        # 兜底：stores.json 无 cdp_port（或缺失）时用端口探测，单端口归唯一店铺
         ports = _discover_cdp_ports()
-        if len(ports) <= 1:
-            return {}
-        # 读缓存
-        cache_file = Path.home() / ".hermes" / "scripts" / "cdp-port-map.json"
-        try:
-            cached = json.loads(cache_file.read_text())
-            if all(p in ports for p in cached.values()):
-                return cached
-        except Exception:
-            pass
-        # 重建：逐个端口连ML页面，通过用户标识匹配店铺
-        USER_PATTERNS = {
-            "1店-子账号": ["HXhuang"],
-            "2店-子账号": ["HWHuang"],
-            "3店-主账号": ["SSILEIXIA"],
-        }
-        store_map = {}
-        for port in ports:
-            try:
-                user = self._quick_identify_port(port)
-                if user:
-                    for store_name, hints in USER_PATTERNS.items():
-                        if any(h in user for h in hints):
-                            store_map[store_name] = port
-                            break
-            except Exception:
-                pass
-        if store_map:
-            try:
-                cache_file.parent.mkdir(parents=True, exist_ok=True)
-                cache_file.write_text(json.dumps(store_map))
-            except Exception:
-                pass
-        return store_map
-
-    def _quick_identify_port(self, port: int) -> Optional[str]:
-        """快速识别端口对应的店铺用户（同步阻塞，仅用于启动映射）。"""
-        import asyncio as _asyncio
-        try:
-            return _asyncio.run(self._async_identify_port(port))
-        except Exception:
-            return None
-
-    async def _async_identify_port(self, port: int) -> Optional[str]:
-        """异步识别端口对应的ML用户。"""
-        try:
-            from playwright.async_api import async_playwright  # noqa: F811
-            async with async_playwright() as pw:
-                browser = await pw.chromium.connect_over_cdp(f"http://127.0.0.1:{port}")
-                page = browser.contexts[0].pages[0]
-                try:
-                    await page.goto("https://myaccount.mercadolibre.com.mx/shipping/inbounds",
-                                   wait_until="domcontentloaded", timeout=15000)
-                except Exception:
-                    pass
-                await asyncio.sleep(1)
-                return await page.evaluate(
-                    "() => document.querySelector('[class*=user]')?.textContent?.trim()?.substring(0,60) || null"
-                )
-        except Exception:
-            return None
+        stores = _load_stores()
+        if len(ports) == 1 and stores:
+            return {next(iter(stores)): ports[0]}
+        return {}
 
     def _find_store_port(self, store_name: str, reused: bool) -> Optional[int]:
-        """找到目标店铺的CDP端口。优先用启动时缓存的映射，兜底取单个端口。"""
+        """找到目标店铺的CDP端口。
+
+        优先 stores.json 的 cdp_port（环境名 key）；stores.json 存在但无该店铺 →
+        报错提示初始化向导；缺失/无 cdp_port 时回退端口探测（单端口场景）。
+        """
+        stores = _load_stores()
+        if stores:
+            info = stores.get(store_name)
+            if not info:
+                raise StepError(1, "config_error",
+                                f"未找到店铺 {store_name} 的紫鸟环境，请运行初始化向导（argent skill setup ml-fulfillment）")
+            if info.get("cdp_port"):
+                return int(info["cdp_port"])
         if not hasattr(self, '_port_map'):
             self._port_map = self._build_port_map()
         if store_name in self._port_map:
             return self._port_map[store_name]
-        # 兜底：单端口场景
+        # 兜底：单端口场景（端口发现）
         ports = _discover_cdp_ports()
         return ports[0] if ports else None
 
     # ---- 店铺级 flock 互斥锁 ----
     def _resolve_store_id(self) -> str:
-        """解析店铺级锁的 storeId：店铺名 → STORE_MAP；未指定店铺时 cfg.store_id；兜底 3店。"""
+        """解析店铺级锁的 storeId：环境名 → stores.json；未指定店铺时 cfg.store_id；找不到报错。"""
         store_name = self.state.store_name or self.cfg.store_name
-        info = STORE_MAP.get(store_name) if store_name else None
-        if info:
-            return info["store_id"]
+        if store_name:
+            info, dev_mode = _resolve_store(store_name)
+            if not info:
+                raise StepError(0, "config_error",
+                                f"未找到店铺 {store_name} 的紫鸟环境，请运行初始化向导（argent skill setup ml-fulfillment）")
+            if dev_mode:
+                self._log("  ⚠️ stores.json 缺失，使用内置 STORE_MAP（开发测试用，客户环境由 stores.json 提供）")
+            return str(info.get("store_id") or "")
         if self.cfg.store_id:
             return self.cfg.store_id
-        return STORE_MAP["3店"]["store_id"]
+        raise StepError(0, "config_error",
+                        "未找到店铺的紫鸟环境，请运行初始化向导（argent skill setup ml-fulfillment）")
 
     def _acquire_store_lock(self) -> Optional[Any]:
         """非阻塞获取店铺级 flock 互斥锁（/tmp/ziniao-<storeId>.lock）。
@@ -2533,7 +2554,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--box", help="箱数（配合 --record-id 使用）")
     p.add_argument("--shipment-id", help="货件号（步骤 6/7/8 恢复时使用）")
     p.add_argument("--store-id", help="覆盖店铺 ID（兼容保留，CDP 模式不再使用）")
-    p.add_argument("--store-name", help="店铺名过滤待处理记录（如 1店；取第一条店铺名匹配的 Pending+就绪 记录）")
+    p.add_argument("--store-name", help="店铺名过滤待处理记录（如 1店-子账号；取第一条店铺名匹配的 Pending+就绪 记录）")
     p.add_argument("--cdp-url", help=f"紫鸟浏览器 CDP 地址（默认 {DEFAULT_CDP_URL}）")
     return p
 
@@ -2556,6 +2577,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             print(json.dumps({"status": "failed", "error": exc.to_dict()},
                              ensure_ascii=False))
             return 1
+        stores = _load_stores()
         result = {
             "status": "ok",
             "fulfillment_js": str(FULFILLMENT_JS),
@@ -2565,6 +2587,12 @@ def main(argv: Optional[list[str]] = None) -> int:
                 "browser_ready": cfg.browser_ready,
                 "cdp_url": cfg.cdp_url,
                 "env_file": str(_default_env_file()),
+            },
+            "stores": {
+                "source": "stores.json" if stores else "STORE_MAP(dev)",
+                "json_path": str(STORES_JSON),
+                "stores": stores or {k: {"name": v["name"], "store_id": v["store_id"]}
+                                     for k, v in STORE_MAP.items()},
             },
         }
         print(json.dumps(result, ensure_ascii=False))
