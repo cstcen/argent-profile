@@ -657,10 +657,12 @@ setup_machine() {
     log_ok "Cron 任务已存在，跳过注册"
   else
     log_info "注册自动化任务（每 5 分钟轮询）..."
-    hermes cron create "every 5m" --name "ML FULL 货件" \
-      --script poll-fulfillment.sh --no-agent --deliver local 2>/dev/null || \
+    if hermes cron create "every 5m" --name "ML FULL 货件" \
+      --script poll-fulfillment.sh --no-agent --deliver local 2>/dev/null; then
+      log_ok "Cron 任务已注册"
+    else
       log_warn "cron 注册失败（可稍后手动执行: hermes cron create \"every 5m\" --name \"ML FULL 货件\" --script poll-fulfillment.sh --no-agent --deliver local）"
-    log_ok "Cron 任务已注册"
+    fi
   fi
   return 0
 }
