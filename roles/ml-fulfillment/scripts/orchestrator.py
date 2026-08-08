@@ -1140,10 +1140,15 @@ class FeishuClient:
                         recovery_attempted=[f"retry_{retries}x"])
 
     def list_pending(self) -> list[dict[str, Any]]:
-        """查询 状态=Pending 且 就绪=true 的记录（与旧 bash 相同解析）。"""
+        """查询 状态 in (Pending, 运行中) 且 就绪=true 的记录（与 poll-fulfillment.sh 同口径）。
+
+        运行中+就绪=true = 上次中断残留（异常未走失败分支），下轮续跑；就绪=false 不捡。
+        """
         if not self.cfg.feishu_ready:
             raise StepError(0, "business", "飞书未配置（缺 FEISHU_BASE_TOKEN/FEISHU_TABLE_ID）")
-        filter_json = json.dumps({"logic": "and", "conditions": [["状态", "==", "Pending"]]})
+        filter_json = json.dumps({"logic": "or",
+                                  "conditions": [["状态", "==", "Pending"],
+                                                 ["状态", "==", "运行中"]]})
         out = self._run(["base", "+record-list",
                          "--base-token", self.cfg.base_token,
                          "--table-id", self.cfg.table_id,
@@ -1163,7 +1168,8 @@ class FeishuClient:
             ready = f.get("就绪") is True
             status = f.get("状态")
             statuses = status if isinstance(status, list) else [status]
-            if ready and any("Pending" in str(s) for s in statuses if s is not None):
+            if ready and any(k in str(s) for k in ("Pending", "运行中")
+                             for s in statuses if s is not None):
                 records.append({
                     "record_id": ids[i],
                     "sku": str(f.get("SKU", "") or ""),
@@ -1171,7 +1177,10 @@ class FeishuClient:
                     "qty": str(f.get("数量", "") or ""),
                     "box": str(f.get("箱数", "") or ""),
                     "shipment_id": str(f.get("货件号") or ""),
-                    "store_name": str(f.get("店铺名称") or ""),
+                    # lark-cli 单选字段返回 list（如 ['2店-子账号']），取首元素与 stores.json key 匹配
+                    "store_name": str((f.get("店铺名称") or [""])[0]
+                                      if isinstance(f.get("店铺名称"), list) and f.get("店铺名称")
+                                      else f.get("店铺名称") or ""),
                 })
         return records
 
@@ -1424,6 +1433,22 @@ class Orchestrator:
         """用户友好失败文案：技术细节不再推给客户（诊断走本地 failures.jsonl + 云上报）。"""
         return (f"😔 FULL 货物处理中断（{self.state.sku or '未知SKU'} "
                 f"{self.state.name or ''}）。已记录诊断信息，请联系问述科技支持排查。")
+
+    def _fail_record(self, step: int, exc: StepError, *, dry_run: bool = False) -> None:
+        """统一失败分支：写 状态=失败 / 就绪=false / 当前步骤=失败信息 / 用户友好消息
+        + failures.jsonl + 云上报。
+
+        防死锁核心：任何异常（StepError 或环境类非 StepError）只要已把记录标记为
+        「运行中」，必须经此改回 失败+就绪=false，否则 poll 永不重新捡取该记录。
+        dry_run 保持零副作用（与「运行中」标记同规则）。
+        """
+        if self.state.record_id and not dry_run:
+            self.feishu.update_field(self.state.record_id, "状态", "失败")
+            self.feishu.update_field(self.state.record_id, "就绪", False)
+            self.feishu.update_step(self.state.record_id, f"失败：{exc.message}")
+            self.feishu.send_message(self._friendly_failure_message())
+        self._record_failure(step, exc)
+        self._report_failure(step, exc)
 
     def _report_failure(self, step: int, exc: StepError, *,
                         screenshot: Optional[str] = None,
@@ -2404,13 +2429,15 @@ class Orchestrator:
             return {"status": "skipped", "reason": "store_busy"}
 
         dry_run = mode == "dry-run"
-        # dry_run 模式不写飞书 Base（保持零副作用）
-        if self.state.record_id and not dry_run:
-            self.feishu.update_field(self.state.record_id, "状态", "运行中")
-            self.feishu.update_step(self.state.record_id, "步骤1：打开店铺")
-
-        # 根据店铺名称启动紫鸟店铺（仅一次），获取下载目录；随后 CDP 接管浏览器
+        # 启动标记（状态=运行中）必须与打开店铺在同一 protected 区域：后续任何异常
+        # （StepError 或 cli_error 等非 StepError）都走统一失败分支（状态=失败/就绪=false），
+        # 防止「运行中+就绪=true」残留记录死锁。dry_run 模式不写飞书 Base（保持零副作用）
         try:
+            if self.state.record_id and not dry_run:
+                self.feishu.update_field(self.state.record_id, "状态", "运行中")
+                self.feishu.update_step(self.state.record_id, "步骤1：打开店铺")
+
+            # 根据店铺名称启动紫鸟店铺（仅一次），获取下载目录；随后 CDP 接管浏览器
             self._dl_dir, port = self._open_store()
             if not port:
                 raise StepError(1, "cli_error", "CDP 端口未发现（浏览器窗口可能未就绪）")
@@ -2418,9 +2445,15 @@ class Orchestrator:
             self._log(f"  CDP 端口: {self.browser.cdp_url}")
             await self.browser.connect(download_dir=str(self._dl_dir))
         except StepError as exc:
-            self._record_failure(step_filter or 1, exc)
-            self._report_failure(step_filter or 1, exc)
+            self._fail_record(step_filter or 1, exc, dry_run=dry_run)
             return self._result("failed", failed_step=step_filter or 1, error=exc.to_dict(),
+                                step_summaries={}, dry_run=dry_run)
+        except Exception as exc:  # 环境类异常（非 StepError，如 playwright 不可用）→ 统一失败分支
+            env_exc = StepError(step_filter or 1, "cli_error", f"环境异常: {exc}",
+                                recovery_attempted=["env_error"])
+            self._log(f"❌ 环境异常（步骤{step_filter or 1}）: {exc}")
+            self._fail_record(step_filter or 1, env_exc, dry_run=dry_run)
+            return self._result("failed", failed_step=step_filter or 1, error=env_exc.to_dict(),
                                 step_summaries={}, dry_run=dry_run)
 
         steps = [step_filter] if step_filter else list(range(1, 9))
@@ -2618,14 +2651,24 @@ def main(argv: Optional[list[str]] = None) -> int:
                                       shipment_id=args.shipment_id,
                                       store_name=args.store_name))
     except StepError as exc:  # 顶层兜底（如配置缺失/步骤保护未捕获）
-        orch._record_failure(exc.step or 0, exc)
-        orch._report_failure(exc.step or 0, exc)
+        orch._fail_record(exc.step or 0, exc, dry_run=args.mode == "dry-run")
         result = {"status": "failed", "record_id": orch.state.record_id or None,
                   "shipment_id": orch.state.shipment_id or None,
                   "sku": orch.state.sku or None,
                   "completed_steps": orch.state.completed_steps,
                   "failed_step": exc.step or None,
                   "error": exc.to_dict(), "files_uploaded": orch.state.files_uploaded}
+    except Exception as exc:  # 环境类异常兜底（非 StepError，如 playwright 不可用）→ 统一失败分支防死锁
+        env_exc = StepError(0, "cli_error", f"环境异常: {exc}",
+                            recovery_attempted=["env_error"])
+        orch._log(f"❌ 顶层环境异常: {exc}")
+        orch._fail_record(0, env_exc, dry_run=args.mode == "dry-run")
+        result = {"status": "failed", "record_id": orch.state.record_id or None,
+                  "shipment_id": orch.state.shipment_id or None,
+                  "sku": orch.state.sku or None,
+                  "completed_steps": orch.state.completed_steps,
+                  "failed_step": 0,
+                  "error": env_exc.to_dict(), "files_uploaded": orch.state.files_uploaded}
     print(json.dumps(result, ensure_ascii=False))
     return 0 if result.get("status") in ("success", "no_pending", "needs_approval", "skipped") else 1
 

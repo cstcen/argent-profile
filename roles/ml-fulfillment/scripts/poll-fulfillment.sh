@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 # Argent FULL 货件自动化 — 多店铺并行 wrapper（no_agent 模式，路径参数化版）
-# 1) 查询飞书 状态=Pending 且 就绪=true 的记录（兼容数组解析）
+# 1) 查询飞书 状态 in (Pending, 运行中) 且 就绪=true 的记录（兼容数组解析；运行中残留可续跑）
 # 2) 按店铺名称去重，只 spawn stores.json 中存在的店铺（防止表格出现未配置店铺时误跑）
 # 3) 为每个店铺 spawn orchestrator（--store-name 过滤，各自日志）；同店互斥由 orchestrator 内部 flock 保证
 # 日志: ~/.hermes/fulfillment-logs/run-<日期>-<店名>.log
@@ -49,11 +49,13 @@ PY=/tmp/pw-venv/bin/python3
 [ -x "$PY" ] || PY=python3
 LARK="$(command -v lark-cli || echo /opt/homebrew/bin/lark-cli)"
 
-# 查询 状态=Pending 的记录（就绪=true 在解析层过滤；状态字段可能返回数组 ["Pending"] 需兼容）
+# 查询 状态 in (Pending, 运行中) 的记录（就绪=true 在解析层过滤；状态字段可能返回数组需兼容）
+# 运行中+就绪=true = 上次中断残留（orchestrator 异常未走失败分支），应继续捡取续跑；
+# 就绪=false 的失败记录仍不捡（解析层排除）。
 OUT=$( "$LARK" base +record-list \
   --base-token "${FEISHU_BASE_TOKEN:-}" \
   --table-id "${FEISHU_TABLE_ID:-}" \
-  --filter-json '{"logic":"and","conditions":[["状态","==","Pending"]]}' \
+  --filter-json '{"logic":"or","conditions":[["状态","==","Pending"],["状态","==","运行中"]]}' \
   --format json 2>/dev/null || true )
 
 # 解析店铺名称（去重 + stores.json 过滤）
@@ -77,9 +79,11 @@ for row in rows:
         continue
     status = f.get("状态")
     statuses = status if isinstance(status, list) else [status]
-    if not any("Pending" in str(s) for s in statuses if s is not None):
+    if not any(k in str(s) for k in ("Pending", "运行中") for s in statuses if s is not None):
         continue
-    store = str(f.get("店铺名称") or "").strip()
+    raw_store = f.get("店铺名称")
+    # lark-cli 单选字段返回 list（如 ['2店-子账号']），取首元素再与 stores.json key 匹配
+    store = str(raw_store[0] if isinstance(raw_store, list) and raw_store else raw_store or "").strip()
     if not store:
         continue
     if valid is not None and store not in valid:
