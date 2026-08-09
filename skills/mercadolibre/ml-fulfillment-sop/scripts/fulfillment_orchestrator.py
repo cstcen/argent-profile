@@ -566,7 +566,19 @@ class PlaywrightClient:
               file=sys.stderr, flush=True)
 
     async def close(self) -> None:
-        """断开 Playwright 驱动（不关闭紫鸟浏览器本身）。"""
+        """关闭自建标签页并断开 Playwright 驱动（不关闭紫鸟浏览器本身/其他窗口）。
+
+        窗口守卫：仅当该标签不是窗口最后一个标签时才关闭（len(ctx.pages) > 1）；
+        若为最后一个标签则保留不关——关闭最后一个标签会连带 Chromium 窗口退出，
+        导致紫鸟窗口消失、CDP 端口丢失，下次 cron 连接失败需重新打开紫鸟。
+        """
+        if self._page is not None:
+            try:
+                ctx = self._page.context
+                if len(ctx.pages) > 1:
+                    await self._page.close()
+            except Exception:
+                pass
         if self._pw is not None:
             try:
                 await self._pw.stop()
@@ -2734,6 +2746,21 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
+async def _run_and_close(orch: "Orchestrator", args: argparse.Namespace) -> dict[str, Any]:
+    """统一运行入口：无论成功/失败/needs_approval/异常，finally 必关自建标签页（防泄漏）。"""
+    try:
+        return await orch.run(mode=args.mode, allow_write=args.allow_write,
+                              step_filter=args.step, record_id=args.record_id,
+                              sku=args.sku, qty=args.qty, box=args.box,
+                              shipment_id=args.shipment_id,
+                              store_name=args.store_name)
+    finally:
+        try:
+            await orch.browser.close()
+        except Exception:
+            pass
+
+
 def main(argv: Optional[list[str]] = None) -> int:
     args = build_parser().parse_args(argv)
     cfg = load_config()
@@ -2787,11 +2814,7 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     orch = Orchestrator(cfg, sel, args)
     try:
-        result = asyncio.run(orch.run(mode=args.mode, allow_write=args.allow_write,
-                                      step_filter=args.step, record_id=args.record_id,
-                                      sku=args.sku, qty=args.qty, box=args.box,
-                                      shipment_id=args.shipment_id,
-                                      store_name=args.store_name))
+        result = asyncio.run(_run_and_close(orch, args))
     except StepError as exc:  # 顶层兜底（如配置缺失/步骤保护未捕获）
         orch._fail_record(exc.step or 0, exc, dry_run=args.mode == "dry-run")
         result = {"status": "failed", "record_id": orch.state.record_id or None,
