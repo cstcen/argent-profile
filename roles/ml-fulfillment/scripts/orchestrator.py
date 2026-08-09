@@ -1307,9 +1307,11 @@ class RunState:
 class Orchestrator:
     """8 步 FULL 货件流程编排器。"""
 
-    def __init__(self, cfg: Config, selectors: Selectors) -> None:
+    def __init__(self, cfg: Config, selectors: Selectors,
+                 args: Optional[argparse.Namespace] = None) -> None:
         self.cfg = cfg
         self.sel = selectors
+        self.args = args or argparse.Namespace(no_lock=False)
         self.browser = PlaywrightClient(cfg, selectors)
         self.feishu = FeishuClient(cfg)
         self.state = RunState()
@@ -2410,6 +2412,9 @@ class Orchestrator:
         调用方输出 {"status":"skipped","reason":"store_busy"} 后以退出码 0 退出（下轮重试）。
         锁随进程退出自动释放；fd 引用保存在 self._store_lock 防止被提前回收。
         """
+        if self.args.no_lock:  # 并发实测/调试开关：跳过 flock，允许同店多进程并行
+            self._log("⚠️ 并发实测模式（无店铺锁）")
+            return True
         import fcntl
         lock_path = f"/tmp/ziniao-{self._resolve_store_id()}.lock"
         f = open(lock_path, "a+")
@@ -2428,7 +2433,8 @@ class Orchestrator:
                   box: Optional[str], shipment_id: Optional[str],
                   store_name: Optional[str] = None) -> dict[str, Any]:
         """执行编排，返回结构化结果 dict（异常也会被捕获转为 failed JSON）。"""
-        self._log(f"🚀 FULL 货件编排启动 mode={mode} allow_write={allow_write}")
+        self._log(f"🚀 FULL 货件编排启动 mode={mode} allow_write={allow_write}"
+                  + (" ⚠️ 并发实测模式（无店铺锁）" if self.args.no_lock else ""))
 
         # 记录解析：显式传入或查询第一条 Pending+就绪
         if record_id:
@@ -2635,6 +2641,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--store-id", help="覆盖店铺 ID（兼容保留，CDP 模式不再使用）")
     p.add_argument("--store-name", help="店铺名过滤待处理记录（如 1店-子账号；取第一条店铺名匹配的 Pending+就绪 记录）")
     p.add_argument("--cdp-url", help=f"紫鸟浏览器 CDP 地址（默认 {DEFAULT_CDP_URL}）")
+    p.add_argument("--no-lock", action="store_true",
+                   help="跳过店铺 flock 锁，仅供并发实测/调试")
     return p
 
 
@@ -2689,7 +2697,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         print(json.dumps({"status": "failed", "error": exc.to_dict()}, ensure_ascii=False))
         return 1
 
-    orch = Orchestrator(cfg, sel)
+    orch = Orchestrator(cfg, sel, args)
     try:
         result = asyncio.run(orch.run(mode=args.mode, allow_write=args.allow_write,
                                       step_filter=args.step, record_id=args.record_id,
