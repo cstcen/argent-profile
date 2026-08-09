@@ -525,7 +525,7 @@ class PlaywrightClient:
         return self._page
 
     async def connect(self, step: int = 0, download_dir: Optional[str] = None) -> None:
-        """连接 CDP 浏览器并定位 ML 页面（延迟连接：首次使用时调用）。"""
+        """连接 CDP 浏览器并打开独立新标签（延迟连接：首次使用时调用）。"""
         try:
             from playwright.async_api import async_playwright
         except ImportError as exc:
@@ -555,32 +555,14 @@ class PlaywrightClient:
                 })
             except Exception:
                 pass
-        # 定位 ML 页面（跨所有 context）：优先 mercadolibre.com.mx
-        target = None
-        for ctx in self._browser.contexts:
-            for p in ctx.pages:
-                if "mercadolibre.com.mx" in (p.url or ""):
-                    target, self._context = p, ctx
-                    break
-            if target:
-                break
-        if not target:
-            for ctx in self._browser.contexts:
-                for p in ctx.pages:
-                    if "mercadolibre.com" in (p.url or ""):
-                        target, self._context = p, ctx
-                        break
-                if target:
-                    break
-        if not target and self._browser.contexts:
-            self._context = self._browser.contexts[0]
-            if self._context.pages:
-                target = self._context.pages[0]
-        if not target:
+        # 每个进程使用独立新标签（同 context 共享 cookie/登录态，多进程并发安全）
+        ctx = self._browser.contexts[0] if self._browser.contexts else None
+        if ctx is None:
             raise StepError(step, "cli_error",
-                            "CDP 浏览器中未找到 ML 页面（请先手动登录美客多）")
-        self._page = target
-        print(f"[{time.strftime('%H:%M:%S')}] ✅ CDP 已连接 {self.cdp_url}，新建页面",
+                            "CDP 浏览器中未找到窗口（请先打开紫鸟店铺窗口）")
+        self._context = ctx
+        self._page = await ctx.new_page()
+        print(f"[{time.strftime('%H:%M:%S')}] ✅ CDP 已连接 {self.cdp_url}，新标签页（独立）",
               file=sys.stderr, flush=True)
 
     async def close(self) -> None:
