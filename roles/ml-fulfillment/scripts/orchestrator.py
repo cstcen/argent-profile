@@ -16,8 +16,9 @@
         自检: 加载 fulfillment.js SELECTORS、检查配置完整性（无副作用）
     /tmp/pw-venv/bin/python3 fulfillment_orchestrator.py --mode dry-run [--record-id recXXX]
         只执行只读步骤 1/2/6，写步骤(3/4/5/7/8)全部跳过
-    /tmp/pw-venv/bin/python3 fulfillment_orchestrator.py --mode full [--allow-write]
-        全流程编排。写步骤默认拒绝，需 --allow-write 才执行；--store-name <店名> 仅处理该店铺记录
+    /tmp/pw-venv/bin/python3 fulfillment_orchestrator.py --mode full [--allow-write] [--record-id recXXX]
+        全流程编排。写步骤默认拒绝，需 --allow-write 才执行；--store-name <店名> 仅处理该店铺记录；
+        --record-id <ID> 定向处理指定记录（店铺从记录字段读取，忽略取第一条逻辑；供并发调度/定向重跑）
     /tmp/pw-venv/bin/python3 fulfillment_orchestrator.py --mode step --step N [--allow-write]
         从指定步骤继续（Agent 确认后恢复执行）
 
@@ -1139,6 +1140,22 @@ class FeishuClient:
         raise StepError(0, "cli_error", f"lark-cli 调用失败: {last_err}",
                         recovery_attempted=[f"retry_{retries}x"])
 
+    @staticmethod
+    def _record_from_row(f: dict[str, Any], record_id: str) -> dict[str, Any]:
+        """把 record-list/record-get 的一行（字段名→值 dict）映射为记录 dict（两处共用）。"""
+        return {
+            "record_id": record_id,
+            "sku": str(f.get("SKU", "") or ""),
+            "name": str(f.get("品名", "") or ""),
+            "qty": str(f.get("数量", "") or ""),
+            "box": str(f.get("箱数", "") or ""),
+            "shipment_id": str(f.get("货件号") or ""),
+            # lark-cli 单选字段返回 list（如 ['2店-子账号']），取首元素与 stores.json key 匹配
+            "store_name": str((f.get("店铺名称") or [""])[0]
+                              if isinstance(f.get("店铺名称"), list) and f.get("店铺名称")
+                              else f.get("店铺名称") or ""),
+        }
+
     def list_pending(self) -> list[dict[str, Any]]:
         """查询 状态 in (Pending, 运行中) 且 就绪=true 的记录（与 poll-fulfillment.sh 同口径）。
 
@@ -1170,19 +1187,39 @@ class FeishuClient:
             statuses = status if isinstance(status, list) else [status]
             if ready and any(k in str(s) for k in ("Pending", "运行中")
                              for s in statuses if s is not None):
-                records.append({
-                    "record_id": ids[i],
-                    "sku": str(f.get("SKU", "") or ""),
-                    "name": str(f.get("品名", "") or ""),
-                    "qty": str(f.get("数量", "") or ""),
-                    "box": str(f.get("箱数", "") or ""),
-                    "shipment_id": str(f.get("货件号") or ""),
-                    # lark-cli 单选字段返回 list（如 ['2店-子账号']），取首元素与 stores.json key 匹配
-                    "store_name": str((f.get("店铺名称") or [""])[0]
-                                      if isinstance(f.get("店铺名称"), list) and f.get("店铺名称")
-                                      else f.get("店铺名称") or ""),
-                })
+                records.append(self._record_from_row(f, ids[i]))
         return records
+
+    def get_record(self, record_id: str) -> Optional[dict[str, Any]]:
+        """按记录 ID 直接查询记录（不限状态/就绪；供 --record-id 定向处理/重跑）。
+
+        lark-cli +record-get 按 ID 精确查（记录不存在返回 ok=false）；输出结构与
+        record-list 相同（fields/data/record_id_list），解析复用 _record_from_row。
+        返回 None 表示记录不存在或不可读。
+        """
+        if not self.cfg.feishu_ready:
+            raise StepError(0, "business", "飞书未配置（缺 FEISHU_BASE_TOKEN/FEISHU_TABLE_ID）")
+        out = self._run(["base", "+record-get",
+                         "--base-token", self.cfg.base_token,
+                         "--table-id", self.cfg.table_id,
+                         "--record-id", record_id,
+                         "--format", "json"], timeout=90)
+        try:
+            d = json.loads(out)
+            if not d.get("ok"):
+                return None
+            fields = d["data"]["fields"]
+            rows = d["data"]["data"]
+            ids = d["data"]["record_id_list"]
+        except (json.JSONDecodeError, KeyError, TypeError) as exc:
+            raise StepError(0, "parse_error", f"record-get 输出解析失败: {out[:200]}") from exc
+        if not rows or not ids:
+            return None
+        # lark-cli 对不存在的记录返回「空值行 + record_id_list 仍含请求 ID」：全空视为不存在
+        f = dict(zip(fields, rows[0]))
+        if all(v is None or v == "" for v in f.values()):
+            return None
+        return self._record_from_row(f, ids[0])
 
     def update_field(self, record_id: str, field_name: str, value: Any) -> None:
         """best-effort：Base 更新失败只记日志，不阻断浏览器主流程。"""
@@ -1256,14 +1293,27 @@ JS_EXTRACT_ML_CODE = """(function(){
   var tds = document.querySelectorAll('td');
   for (var i = 0; i < tds.length; i++) {
     var t = tds[i].textContent.trim();
-    var m = t.match(/[A-Z]{4}[0-9]+/) || t.match(/ML[UB][0-9]+/);
+    // 排除已知地址码：含 MXCD 前缀（如 MXCD05，步骤4大货件地址）的 td 直接跳过
+    if (t.indexOf('MXCD') >= 0) continue;
+    // 主模式：4 字母 + 5+ 位数字（真实 ML 码如 BXAS21677/FKFC76125/GEOD24805），
+    // 收紧自 [A-Z]{4}[0-9]+（过宽会把 MXCD05 这类短数字地址码误匹配进来）；
+    // 负向前瞻 (?!MXCD) 双保险排除 MXCD 地址码
+    var m = t.match(/(?!MXCD)[A-Z]{4}[0-9]{5,}/) || t.match(/ML[UB][0-9]+/);
     if (m) return m[0];
   }
   // 兜底：搜 Código ML: XXXX12345 格式
   var body = document.body.textContent;
-  var m2 = body.match(/Código ML:\s*([A-Z0-9]+)/);
+  var m2 = body.match(/Código ML:\\s*([A-Z0-9]+)/);
   if (m2) return m2[1];
   return 'UNKNOWN';
+})();"""
+
+JS_IS_LABEL_PAGE = """(function(){
+  // 产品标页特征：URL 含 /labels/ 或 /label/，或页面含 Etiquetas/Descargar
+  var url = location.href;
+  if (url.indexOf('/labels/') >= 0 || url.indexOf('/label/') >= 0) return true;
+  var body = document.body ? (document.body.textContent || '') : '';
+  return body.indexOf('Etiquetas') >= 0 || body.indexOf('Descargar') >= 0;
 })();"""
 
 JS_EXTRACT_SHIPMENT_ID = """(function(){
@@ -1297,6 +1347,7 @@ class RunState:
     box: str = ""
     shipment_id: str = ""
     ml_code: str = "UNKNOWN"
+    address_code: str = ""  # 步骤4大货件地址码（如 MXCD05），步骤6 提取 ML 码时用于排除误匹配
     store_name: str = ""
     inbound_id: str = ""
     completed_steps: list[int] = field(default_factory=list)
@@ -1778,7 +1829,10 @@ class Orchestrator:
                         text = (await btn.text_content() or "")
                         if "MXCD05" in text:
                             await btn.click()
-                            self._log("  已选地址: MXCD05")
+                            # 记录地址码（步骤6 提取 ML 码时用于排除误匹配，如 MXCD05）
+                            m_addr = re.search(r"[A-Z]{2,8}\d{2,6}", text)
+                            self.state.address_code = m_addr.group(0) if m_addr else "MXCD05"
+                            self._log(f"  已选地址: {self.state.address_code}")
                             await asyncio.sleep(1)
                             await self.browser.page.locator(
                                 '.multi-node-card button, .andes-card__footer button'
@@ -2114,6 +2168,13 @@ class Orchestrator:
     # ==================================================
     # 步骤 6：标签下载（只读下载）
     # ==================================================
+    async def _is_label_page(self) -> bool:
+        """验证当前页面是产品标页（URL 含 /labels/ 或 /label/，或页面含 Etiquetas/Descargar）。"""
+        try:
+            return str(await self.browser.evaluate(JS_IS_LABEL_PAGE, step=6)).strip() == "True"
+        except Exception:
+            return False
+
     async def step6_labels(self, dry_run: bool = False) -> None:
         self._log("步骤6 标签下载")
         # dry_run 且无货件号：没有可下载标签的货件，直接记为跳过（避免访问不存在的页面）
@@ -2124,11 +2185,25 @@ class Orchestrator:
             return
         await self.browser.visit_plan_page("labeling", self.state.shipment_id, step=6)
         await asyncio.sleep(3)
+        # 提取 ML 码前先验证页面是产品标页（并发实测 2026-08-09：页面不在产品标页时
+        # checkbox notfound + ML 码误提取 MXCD05）。页面不对 → 重新导航 labeling 页 1 次再提取。
+        if not await self._is_label_page():
+            self._log("  ⚠️ 页面非产品标页，重新导航 labeling 页（1 次）")
+            await self.browser.visit_plan_page("labeling", self.state.shipment_id, step=6)
+            await asyncio.sleep(3)
+            if not await self._is_label_page():
+                raise StepError(6, "selector_not_found", "页面非产品标页（label_page_verify 失败）",
+                                recovery_attempted=["label_page_verify"])
         # 提取 ML 码（产品标页面有完整产品信息）
         try:
             self.state.ml_code = await self.browser.evaluate(JS_EXTRACT_ML_CODE, step=6)
         except StepError:
             pass
+        # 防御：提取值 == 步骤4地址码（如 MXCD05）或长度 < 6 → 视为 UNKNOWN（不阻断，checkbox 才是主流程）
+        code = (self.state.ml_code or "").strip()
+        if code and (code == self.state.address_code or len(code) < 6):
+            self._log(f"  ⚠️ ML码提取异常（{code}），视为 UNKNOWN")
+            self.state.ml_code = "UNKNOWN"
         self._log(f"  ML码: {self.state.ml_code}")
         # 6-1. 勾选所有 checkbox（原生 click，替代 fiber onChange hack）
         r = await self.browser.click_checkboxes_with_fallback(6, "checkboxes", wait_after=2.0)
@@ -2436,12 +2511,43 @@ class Orchestrator:
         self._log(f"🚀 FULL 货件编排启动 mode={mode} allow_write={allow_write}"
                   + (" ⚠️ 并发实测模式（无店铺锁）" if self.args.no_lock else ""))
 
-        # 记录解析：显式传入或查询第一条 Pending+就绪
+        # 记录解析：
+        #   --record-id：定向查该记录（record-get 直接按 ID 查，不限状态/就绪，供并发调度/
+        #     定向重跑），店铺从记录字段取（store_name），无需 --store-name；若同时给
+        #     --store-name 且不匹配则报错提示；
+        #   --store-name：过滤查询第一条店铺名匹配的 Pending+就绪；缺省：第一条 Pending+就绪
         if record_id:
-            self.state.record_id = record_id
+            rec = self.feishu.get_record(record_id)
+            if rec is None:
+                self._log(f"记录 {record_id} 不存在或无法读取，本轮退出。")
+                return {"status": "failed", "record_id": record_id, "shipment_id": None,
+                        "sku": None, "completed_steps": [], "failed_step": None,
+                        "error": {"step": None, "type": "business",
+                                  "message": f"记录 {record_id} 不存在或无法读取",
+                                  "recovery_attempted": []},
+                        "files_uploaded": {}, "dry_run": mode == "dry-run",
+                        "write_steps": list(WRITE_STEPS)}
+            if store_name and rec.get("store_name") and rec["store_name"] != store_name:
+                raise StepError(0, "business",
+                                f"--record-id {record_id} 的记录店铺 {rec['store_name']} "
+                                f"与 --store-name {store_name} 不匹配")
+            self._log(f"🎯 定向处理记录 {record_id}（店铺：{rec.get('store_name') or '未知'}）")
+            self.state.record_id = rec["record_id"]
+            self.state.name = rec["name"]
+            self.state.store_name = rec.get("store_name", "") or self.cfg.store_name
+            # 显式 --sku/--qty/--box 覆盖记录字段（未给则用记录值）
             if sku:
                 self.state.sku, self.state.qty = sku, qty or ""
                 self.state.box = box or ""
+            else:
+                self.state.sku = rec["sku"]
+                self.state.qty = rec["qty"]
+                self.state.box = rec["box"]
+            # 续传逻辑：货件号存在→从步骤 4 继续；无→从头
+            existing_shipment = rec.get("shipment_id", "")
+            if existing_shipment and existing_shipment not in ("", "None", "null"):
+                self.state.shipment_id = existing_shipment
+                self._log(f"  已有货件号 {existing_shipment}，从步骤4继续")
         else:
             pending = self.feishu.list_pending()
             if store_name:
@@ -2633,7 +2739,7 @@ def build_parser() -> argparse.ArgumentParser:
                    help="step 模式下的步骤号")
     p.add_argument("--allow-write", action="store_true",
                    help="批准写步骤(3/4/5/7/8)执行（默认拒绝）")
-    p.add_argument("--record-id", help="指定飞书记录（缺省自动查询第一条 Pending+就绪）")
+    p.add_argument("--record-id", help="指定飞书记录 ID 定向处理（店铺从记录字段读取，忽略 --store-name 取第一条逻辑；供并发调度/定向重跑）")
     p.add_argument("--sku", help="SKU（配合 --record-id 使用）")
     p.add_argument("--qty", help="数量（配合 --record-id 使用）")
     p.add_argument("--box", help="箱数（配合 --record-id 使用）")
