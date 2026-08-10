@@ -14,6 +14,7 @@ distribution_owned:
   - mcp.json
   - roles.yaml
   - souls/
+  - skins/
 
 env_requires:
   - name: WHYSHU_API_KEY
