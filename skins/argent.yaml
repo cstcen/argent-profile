@@ -1,49 +1,52 @@
 # Argent 品牌 skin — 问述科技桌面 AI 助手
 # 继承 default skin（缺失键自动回落到 default），只声明品牌差异键。
-# 品牌色板：深海军蓝 #0D1B2A 系 + 青绿 #00C896 + 文字 #E8EAF2。
+# 品牌色板：对齐 whyshu 官网深色紫系（whyshu-web/src/app/globals.css）：
+#   bg-deep #07060b / bg-surface #0f0d17 / bg-card #16132a / accent #a78bfa
+#   accent-bright #c4b5fd / accent-glow #7c3aed / text-primary #f0eef6
+#   text-secondary #9b95b0 / text-muted #5e5878 / border #2a2545
 name: argent
-description: "Argent — 深海军蓝 × 青绿，问述科技品牌主题"
+description: "Argent — 薰衣草紫 #a78bfa × 亮紫 #c4b5fd，对齐 whyshu 官网深色紫系"
 
 colors:
-  # 基础表面色 — TUI status bar / desktop GUI 由此衍生整个色板
-  background: "#0D1B2A"
-  # 深海军蓝系（边框 / 强调 / 填充面）
-  banner_border: "#1B3A5C"
-  banner_accent: "#3D6B96"
-  ui_accent: "#3D6B96"
-  status_bar_bg: "#0F2034"
-  status_bar_dim: "#5C7691"
-  session_border: "#35536F"
-  completion_menu_bg: "#0F2034"
-  completion_menu_current_bg: "#16324F"
-  completion_menu_meta_bg: "#0F2034"
-  completion_menu_meta_current_bg: "#1B3A5C"
-  selection_bg: "#1B3A5C"
-  voice_status_bg: "#0F2034"
-  # 青绿 #00C896（标题 / 边框 / 强调文字 / 成功）
-  banner_title: "#00C896"
-  ui_label: "#00C896"
-  ui_ok: "#00C896"
-  ui_tool: "#00C896"
-  prompt: "#00C896"
-  input_rule: "#00C896"
-  response_border: "#00C896"
-  status_bar_strong: "#00C896"
-  status_bar_good: "#3DD6A8"
-  session_label: "#00C896"
-  shell_dollar: "#00C896"
+  # 基础表面色 — TUI status bar / desktop GUI 由此衍生整个色板（bg-deep）
+  background: "#07060b"
+  # 薰衣草紫 accent #a78bfa（边框 / 强调 / 填充面）
+  banner_border: "#a78bfa"
+  banner_accent: "#c4b5fd"                # accent-bright 区分层次
+  ui_accent: "#a78bfa"
+  status_bar_bg: "#07060b"                # bg-deep
+  status_bar_dim: "#9b95b0"               # text-secondary
+  session_border: "#5e5878"               # text-muted
+  completion_menu_bg: "#16132a"           # bg-card
+  completion_menu_current_bg: "#2a2545"   # border 系
+  completion_menu_meta_bg: "#16132a"      # bg-card
+  completion_menu_meta_current_bg: "#2a2545"  # border 系
+  selection_bg: "#2a2545"                 # border 系
+  voice_status_bg: "#07060b"              # bg-deep
+  # 亮紫 accent-bright #c4b5fd（标题 / 边框 / 强调文字）
+  banner_title: "#c4b5fd"
+  ui_label: "#a78bfa"
+  ui_ok: "#00C896"                        # 语义绿：成功（功能色不随品牌变）
+  ui_tool: "#a78bfa"
+  prompt: "#c4b5fd"
+  input_rule: "#c4b5fd"
+  response_border: "#c4b5fd"
+  status_bar_strong: "#a78bfa"
+  status_bar_good: "#3DD6A8"              # 语义绿：成功
+  session_label: "#a78bfa"
+  shell_dollar: "#c4b5fd"
   # 文字色
-  banner_text: "#E8EAF2"
-  status_bar_text: "#C6D2E0"
-  banner_dim: "#5C7691"
-  ui_thinking: "#8FA3B8"
-  # 状态
+  banner_text: "#f0eef6"                  # text-primary
+  status_bar_text: "#f0eef6"              # text-primary
+  banner_dim: "#9b95b0"                   # text-secondary
+  ui_thinking: "#9b95b0"                  # text-secondary
+  # 状态（语义色保留：绿/红/橙，功能色不随品牌变）
   ui_error: "#FF6B6B"
   ui_warn: "#FFA726"
   status_bar_warn: "#FFB84D"
   status_bar_bad: "#FF8C42"
   status_bar_critical: "#FF6B6B"
-  # 代码 / diff 高亮
+  # 代码 / diff 高亮（功能色保留）
   diff_added: "#10331F"
   diff_removed: "#3A1D24"
   diff_added_word: "#00C896"
@@ -88,10 +91,10 @@ banner_logo: |
   [#005C41]╚═╝  ╚═╝╚═╝  ╚═╝ ╚═════╝ ╚══════╝╚═╝  ╚═══╝   ╚═╝   [/]
 
 banner_hero: |
-  [#00C896]                     ✦                     [/]
-  [#2BAE8C]                  ✦     ✦                  [/]
-  [#1B6B52]               ✦     ✦     ✦               [/]
-  [#3D6B96]            ✦     ✦     ✦     ✦            [/]
-  [#35536F]         ✦     ✦     ✦     ✦     ✦         [/]
-  [#1B3A5C]          ═══════════════════════          [/]
-  [dim #8FA3B8]              argent online            [/]
+  [#c4b5fd]                     ✦                     [/]
+  [#a78bfa]                  ✦     ✦                  [/]
+  [#7c3aed]               ✦     ✦     ✦               [/]
+  [#6d28d9]            ✦     ✦     ✦     ✦            [/]
+  [#4c1d95]         ✦     ✦     ✦     ✦     ✦         [/]
+  [#2a2545]          ═══════════════════════          [/]
+  [dim #9b95b0]              argent online            [/]
