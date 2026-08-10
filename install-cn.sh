@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Argent — 问述科技桌面 AI 助手 一键安装（v0.4.0 Profile Distribution）
+# Argent — 问述科技桌面 AI 助手 一键安装（v0.5.0 Profile Distribution）
 set -euo pipefail
 
 HERMES_HOME="${HERMES_HOME:-$HOME/.hermes}"
 ARGENT_HOME="${ARGENT_HOME:-$HOME/.argent}"
-ARGENT_VERSION="v0.4.0"
+ARGENT_VERSION="v0.5.0"
 PIP_MIRROR="-i https://pypi.tuna.tsinghua.edu.cn/simple"
 RED='\033[0;31m'; GREEN='\033[0;32m'; CYAN='\033[0;36m'; NC='\033[0m'
 log_info()  { echo -e "${CYAN}→${NC} $*"; }
@@ -92,7 +92,7 @@ case "${1:-chat}" in
     echo "✅ Argent 已更新"
     ;;
   version|--version|-v)
-    echo "Argent v0.4.0"
+    echo "Argent v0.5.0"
     ;;
   role)
     exec python3 -m argent_cli.roles "${@:2}"
