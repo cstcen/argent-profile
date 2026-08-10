@@ -1,6 +1,6 @@
 name: argent
 version: 0.4.0
-description: "Argent — 问述科技桌面 AI 助手，内置美客多运营、HR、行政等行业角色"
+description: "Argent — 问述科技桌面 AI 助手，内置通用助手、HR、行政等办公角色（美客多运营见 argent-ml profile）"
 author: "问述科技 (Whyshu)"
 hermes_requires: ">=0.13.0"
 license: MIT

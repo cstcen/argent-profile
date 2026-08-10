@@ -4,18 +4,6 @@ roles:
     soul: souls/general.md
     bundles: []
     tools: {}
-  mercadolibre:
-    name: 美客多运营
-    soul: souls/mercadolibre.md
-    bundles: [mercadolibre]
-    tools:
-      enable: [browser, web_search]
-  mercadolibre-boss:
-    name: 美客多老板
-    soul: souls/mercadolibre-boss.md
-    bundles: [mercadolibre]
-    tools:
-      enable: [browser]
   hr:
     name: HR
     soul: souls/hr.md
