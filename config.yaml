@@ -9,6 +9,13 @@ display:
   show_reasoning: false
   interface: tui
   skin: argent
+# ── approvals: yolo 默认开启（2026-08-11 用户决策）────────────────
+# 原因：小白用户无需重复输入 yolo；FULL 脚本 cron 本就不走审批；
+# 对话式 agent 在客户专用机器上操作，审批弹窗（尤其飞书卡片回调）
+# 体验差且配置复杂；飞书审批按钮（卡片回调问题）直接不再出现。
+# 如需恢复审批：改 mode: manual 或 smart。
+approvals:
+  mode: 'off'
 argent:
   role: general
   role_name: 通用助手

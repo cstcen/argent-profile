@@ -7,8 +7,12 @@ license: MIT
 
 # CRITICAL: SOUL.md NOT in distribution_owned
 # → argent role switches are preserved across hermes profile update
-# config.yaml NOT in distribution_owned (argent role 会改写 bundles/tools)
+# config.yaml IS in distribution_owned，但 update 时 hermes 保留用户版本
+# （profile_distribution._copy_dist_payload 对 config.yaml 的 preserve_config 逻辑）
+# → 新装复制（approvals.mode: off / show_reasoning: false / skin: argent 生效），
+#   已装用户 update 不覆盖，需手动 hermes config set
 distribution_owned:
+  - config.yaml
   - skills/
   - cron/
   - mcp.json
